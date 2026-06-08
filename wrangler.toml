@@ -29,7 +29,7 @@ port = 8787
 #   wrangler secret put JWT_SECRET   --env dev
 # ──────────────────────────────────────────────────────────────────────────────
 [env.dev]
-name = "expediente-dev"
+name = "expediente"
 vars = { APP_USERNAME = "admin" }
 routes = [
   { pattern = "casos-dev.axlotl.dev", custom_domain = true },
