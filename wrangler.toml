@@ -37,10 +37,8 @@ routes = [
 
 [[env.dev.d1_databases]]
 binding = "DB"
-database_name = "expediente-dev"
-database_id = "FILL_IN_AFTER_CREATE"
-# Run:  wrangler d1 create expediente-dev
-# Then: wrangler d1 execute expediente-dev --remote --file=schema.sql --env dev
+database_name = "expediente"
+database_id = "8dfebeb0-4e74-4d30-96f5-9cd6d8c5df2a"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # PRODUCTION environment  →  https://casos.axlotl.dev   (not used yet; for later)
