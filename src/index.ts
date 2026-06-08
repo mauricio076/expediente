@@ -96,6 +96,7 @@ const EMPTY_CASE = {
   caseInfo: { title: 'Mi caso', folderNo: '', court: '', status: 'En proceso', opponent: '', notes: '' },
   events: [],
   documents: [],
+  photos: [],
   notes: [],
   relatedCases: [],
   pendingRequests: [],

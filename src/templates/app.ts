@@ -114,6 +114,13 @@ export function getAppHtml(): string {
     { id:"local",        label:"Disco local",  icon:"laptop-minimal" },
     { id:"other",        label:"Otro enlace",  icon:"link"       },
   ];
+  const PHOTO_SOURCES = [
+    { id:"icloud",        label:"iCloud",         icon:"cloud"       },
+    { id:"google_photos", label:"Google Fotos",   icon:"image"       },
+    { id:"dropbox",       label:"Dropbox",        icon:"cloud"       },
+    { id:"url",           label:"URL directa",    icon:"link"        },
+    { id:"other",         label:"Otro",           icon:"image"       },
+  ];
   const RELATED_TYPES = [
     { id:"carpeta",    label:"Carpeta",    color:"purple" },
     { id:"caso",       label:"Caso",       color:"blue"   },
@@ -678,6 +685,78 @@ export function getAppHtml(): string {
     );
   };
 
+  // ── FotosView ───────────────────────────────────────────────────────────────
+  const FotosView = ({ data, onAdd, onEdit, onDelete }) => {
+    const [search, setSearch] = useState("");
+    const [failedImgs, setFailedImgs] = useState({});
+    const photos = data.photos || [];
+    const filtered = photos.filter(p => {
+      const q = search.toLowerCase();
+      return !q || p.name.toLowerCase().includes(q) || (p.caption||"").toLowerCase().includes(q) || (p.tags||[]).some(t => t.toLowerCase().includes(q));
+    });
+    const markFailed = id => setFailedImgs(f => ({ ...f, [id]: true }));
+    return (
+      <div>
+        <SectionHeader title="Fotos" subtitle="Registro visual vinculado al caso."
+          action={<Btn onClick={onAdd} variant="outline"><Icon name="plus" size={13} />Agregar</Btn>} />
+        <div style={{ marginBottom: 14 }}>
+          <SearchBar value={search} onChange={setSearch} placeholder="Buscar por nombre, descripción o etiqueta…" />
+        </div>
+        {filtered.length === 0 && <EmptyState icon="image" message={search ? "Sin resultados para «" + search + "»." : "Sin fotos registradas."} action={
+          !search && <Btn onClick={onAdd} variant="outline"><Icon name="plus" size={13} />Agregar foto</Btn>
+        } />}
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(180px, 1fr))", gap:12 }}>
+          {filtered.map(photo => {
+            const src = PHOTO_SOURCES.find(s => s.id === photo.source) || PHOTO_SOURCES[4];
+            const failed = failedImgs[photo.id];
+            return (
+              <Card key={photo.id} style={{ padding:0, overflow:"hidden", display:"flex", flexDirection:"column" }}>
+                {/* Preview */}
+                <div style={{ position:"relative", background:"rgba(28,43,43,0.06)", aspectRatio:"4/3", display:"flex", alignItems:"center", justifyContent:"center", overflow:"hidden" }}>
+                  {photo.url && !failed
+                    ? <img src={photo.url} alt={photo.name}
+                        onError={() => markFailed(photo.id)}
+                        style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
+                    : <Icon name="image" size={36} color="var(--fg-3)" />
+                  }
+                  {/* Overlay actions */}
+                  <div style={{ position:"absolute", top:6, right:6, display:"flex", gap:4 }}>
+                    {photo.url && (
+                      <a href={photo.url} target="_blank" rel="noreferrer"
+                        style={{ display:"inline-flex", alignItems:"center", justifyContent:"center", width:26, height:26, borderRadius:"var(--radius-sm)", background:"rgba(255,255,255,0.85)", backdropFilter:"blur(4px)", color:"var(--fg-2)", textDecoration:"none" }}>
+                        <Icon name="external-link" size={12} />
+                      </a>
+                    )}
+                    <button onClick={() => onEdit(photo)}
+                      style={{ display:"inline-flex", alignItems:"center", justifyContent:"center", width:26, height:26, borderRadius:"var(--radius-sm)", background:"rgba(255,255,255,0.85)", backdropFilter:"blur(4px)", border:"none", cursor:"pointer", color:"var(--fg-2)" }}>
+                      <Icon name="pencil" size={12} />
+                    </button>
+                    <button onClick={() => onDelete(photo.id)}
+                      style={{ display:"inline-flex", alignItems:"center", justifyContent:"center", width:26, height:26, borderRadius:"var(--radius-sm)", background:"rgba(255,255,255,0.85)", backdropFilter:"blur(4px)", border:"none", cursor:"pointer", color:"#B04A3A" }}>
+                      <Icon name="trash-2" size={12} />
+                    </button>
+                  </div>
+                </div>
+                {/* Info */}
+                <div style={{ padding:"8px 10px", flex:1 }}>
+                  <div style={{ fontSize:12, fontWeight:500, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{photo.name}</div>
+                  {photo.caption && <div style={{ fontSize:11, color:"var(--fg-3)", marginTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{photo.caption}</div>}
+                  <div style={{ fontSize:10, color:"var(--fg-3)", marginTop:4, display:"flex", gap:5, flexWrap:"wrap", alignItems:"center" }}>
+                    <span>{src.label}</span>
+                    {photo.dateAdded && <span>· {photo.dateAdded}</span>}
+                    {(photo.tags||[]).map(t => (
+                      <span key={t} style={{ background:"rgba(28,43,43,0.06)", border:"1px solid rgba(28,43,43,0.12)", borderRadius:999, padding:"1px 5px" }}>{t}</span>
+                    ))}
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   // ── PersonasView ────────────────────────────────────────────────────────────
   const PersonasView = ({ data, onAdd, onEdit, onDelete }) => {
     const people = data.people || [];
@@ -786,6 +865,7 @@ export function getAppHtml(): string {
     { id:"dates",    icon:"calendar-days",       label:"Fechas"         },
     { id:"timeline", icon:"timer",              label:"Timeline"       },
     { id:"docs",     icon:"files",              label:"Documentos"     },
+    { id:"photos",   icon:"image",              label:"Fotos"          },
     { id:"people",   icon:"users",              label:"Personas clave" },
     { id:"notes",    icon:"notebook-text",      label:"Notas"          },
     { id:"related",  icon:"folder-open",        label:"Relacionados"   },
@@ -955,6 +1035,16 @@ export function getAppHtml(): string {
       <Field label="URL / enlace al archivo" type="url" value={form.url||""} onChange={v => setForm(f => ({...f, url:v}))} placeholder="https://…" />
       <Field label="Etiquetas (separadas por coma)" value={form.tags||""} onChange={v => setForm(f => ({...f, tags:v}))} placeholder="Ej. legal, original, pendiente" />
       <Field label="Fecha de incorporación" type="date" value={form.dateAdded||""} onChange={v => setForm(f => ({...f, dateAdded:v}))} />
+    </Modal>
+  );
+  const PhotoModal = ({ form, setForm, onSave, onClose }) => (
+    <Modal title={form.id ? "Editar foto" : "Nueva foto"} onClose={onClose} onSave={onSave}>
+      <Field label="Nombre" value={form.name||""} onChange={v => setForm(f => ({...f, name:v}))} required placeholder="Ej. Fachada del inmueble" />
+      <Field label="Fuente" as="select" value={form.source||"icloud"} onChange={v => setForm(f => ({...f, source:v}))} options={PHOTO_SOURCES.map(s => ({ value:s.id, label:s.label }))} />
+      <Field label="URL / enlace a la foto" type="url" value={form.url||""} onChange={v => setForm(f => ({...f, url:v}))} placeholder="https://…" />
+      <Field label="Descripción" value={form.caption||""} onChange={v => setForm(f => ({...f, caption:v}))} placeholder="Breve descripción de la imagen" />
+      <Field label="Etiquetas (separadas por coma)" value={form.tags||""} onChange={v => setForm(f => ({...f, tags:v}))} placeholder="Ej. exterior, daños, 2024" />
+      <Field label="Fecha" type="date" value={form.dateAdded||""} onChange={v => setForm(f => ({...f, dateAdded:v}))} />
     </Modal>
   );
   const NoteModal = ({ form, setForm, onSave, onClose }) => (
@@ -1161,6 +1251,7 @@ export function getAppHtml(): string {
       const defaults = {
         event:   { date:today, type:"legal",       title:"", description:"", attachedDocs:[] },
         doc:     { name:"",    type:"google_drive", url:"",  tags:"",         dateAdded:today  },
+        photo:   { name:"",    source:"icloud",     url:"",  caption:"", tags:"", dateAdded:today },
         note:    { date:today, type:"other",        title:"", content:"",    author:""        },
         pending: { date:today, requestedBy:"",      description:"", done:false               },
         person:  { role:"testigo", name:"",         phone:"", email:"",      notes:""         },
@@ -1171,7 +1262,7 @@ export function getAppHtml(): string {
       setForm(defaults[type] || {}); setModal(type);
     };
     const openEdit = (type, item) => {
-      setForm(type === "doc" ? { ...item, tags: tagsStr(item.tags) } : { ...item });
+      setForm((type === "doc" || type === "photo") ? { ...item, tags: tagsStr(item.tags) } : { ...item });
       setModal(type);
     };
 
@@ -1187,6 +1278,12 @@ export function getAppHtml(): string {
         if (!form.name) return;
         const doc = { ...form, id: form.id || "d" + Date.now(), tags: tagsArr(form.tags) };
         upd({ ...data, documents: form.id ? data.documents.map(d => d.id === doc.id ? doc : d) : [...data.documents, doc] });
+        closeModal();
+      },
+      photo: () => {
+        if (!form.name) return;
+        const photo = { ...form, id: form.id || "ph" + Date.now(), tags: tagsArr(form.tags) };
+        upd({ ...data, photos: form.id ? (data.photos||[]).map(p => p.id === photo.id ? photo : p) : [...(data.photos||[]), photo] });
         closeModal();
       },
       note: () => {
@@ -1226,6 +1323,7 @@ export function getAppHtml(): string {
     const del = {
       event:   id => upd({ ...data, events:         data.events.filter(e => e.id !== id) }),
       doc:     id => upd({ ...data, documents:       data.documents.filter(d => d.id !== id) }),
+      photo:   id => upd({ ...data, photos:          (data.photos||[]).filter(p => p.id !== id) }),
       note:    id => upd({ ...data, notes:           (data.notes||[]).filter(n => n.id !== id) }),
       pending: id => upd({ ...data, pendingRequests: (data.pendingRequests||[]).filter(p => p.id !== id) }),
       person:  id => upd({ ...data, people:          (data.people||[]).filter(p => p.id !== id) }),
@@ -1284,6 +1382,7 @@ export function getAppHtml(): string {
             {tab==="dates"    && <FechasView      data={data} onAdd={() => openAdd("date")}    onEdit={d => openEdit("date",d)}    onDelete={del.date}    />}
             {tab==="timeline" && <TimelineView    data={data} onAdd={() => openAdd("event")}   onEdit={e => openEdit("event",e)}   onDelete={del.event}   onToggleDocLink={toggleDocLink} />}
             {tab==="docs"     && <DocumentosView  data={data} onAdd={() => openAdd("doc")}     onEdit={d => openEdit("doc",d)}     onDelete={del.doc}     />}
+            {tab==="photos"   && <FotosView       data={data} onAdd={() => openAdd("photo")}   onEdit={p => openEdit("photo",p)}   onDelete={del.photo}   />}
             {tab==="people"   && <PersonasView    data={data} onAdd={() => openAdd("person")}  onEdit={p => openEdit("person",p)}  onDelete={del.person}  />}
             {tab==="notes"    && <NotasView       data={data} onAdd={() => openAdd("note")}    onEdit={n => openEdit("note",n)}    onDelete={del.note}    />}
             {tab==="related"  && <RelacionadosView data={data} onAdd={() => openAdd("related")} onEdit={r => openEdit("related",r)} onDelete={del.related} />}
@@ -1292,6 +1391,7 @@ export function getAppHtml(): string {
 
         {modal==="event"   && <EventModal   form={form} setForm={setForm} onSave={save.event}   onClose={closeModal} />}
         {modal==="doc"     && <DocModal     form={form} setForm={setForm} onSave={save.doc}     onClose={closeModal} />}
+        {modal==="photo"   && <PhotoModal   form={form} setForm={setForm} onSave={save.photo}   onClose={closeModal} />}
         {modal==="note"    && <NoteModal    form={form} setForm={setForm} onSave={save.note}    onClose={closeModal} />}
         {modal==="pending" && <PendingModal form={form} setForm={setForm} onSave={save.pending} onClose={closeModal} />}
         {modal==="person"  && <PersonModal  form={form} setForm={setForm} onSave={save.person}  onClose={closeModal} />}
