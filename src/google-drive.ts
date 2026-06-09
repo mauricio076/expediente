@@ -10,8 +10,20 @@ interface TokenCache {
   expires: number
 }
 
+interface ThumbCache {
+  url: string
+  expires: number
+}
+
 let tokenCache: TokenCache | null = null
-const thumbUrlCache = new Map<string, string>() // fileId → thumbnailLink
+// thumbnailLinks are short-lived; cache them for 30 minutes only
+const thumbUrlCache = new Map<string, ThumbCache>()
+
+const DRIVE_ID_RE = /^[a-zA-Z0-9_-]+$/
+
+function validateId(id: string, label: string): void {
+  if (!id || !DRIVE_ID_RE.test(id)) throw new Error(`Invalid ${label}`)
+}
 
 function toB64url(bytes: Uint8Array): string {
   let binary = ''
@@ -75,31 +87,47 @@ export interface DriveFile {
 }
 
 export async function listFolderImages(folderId: string, saJson: string): Promise<DriveFile[]> {
+  validateId(folderId, 'folderId')
   const sa: ServiceAccount = JSON.parse(saJson)
   const token = await getAccessToken(sa)
 
-  const params = new URLSearchParams({
-    q:        `'${folderId}' in parents and mimeType contains 'image/' and trashed = false`,
-    fields:   'files(id,name,mimeType,thumbnailLink,webViewLink)',
-    pageSize: '100',
-    orderBy:  'name',
-  })
+  const allFiles: DriveFile[] = []
+  let pageToken: string | undefined
 
-  const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  if (!res.ok) throw new Error(`Drive API ${res.status}: ${await res.text()}`)
+  do {
+    const params = new URLSearchParams({
+      q:        `'${folderId}' in parents and mimeType contains 'image/' and trashed = false`,
+      fields:   'nextPageToken,files(id,name,mimeType,thumbnailLink,webViewLink)',
+      pageSize: '1000',
+      orderBy:  'name',
+    })
+    if (pageToken) params.set('pageToken', pageToken)
 
-  const data = await res.json() as { files: DriveFile[] }
-  const files = data.files || []
-  for (const f of files) {
-    if (f.thumbnailLink) thumbUrlCache.set(f.id, f.thumbnailLink)
-  }
-  return files
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) throw new Error(`Drive API ${res.status}: ${await res.text()}`)
+
+    const data = await res.json() as { files: DriveFile[]; nextPageToken?: string }
+    const files = data.files || []
+
+    const ttl = Date.now() + 30 * 60 * 1000 // thumbnailLinks are short-lived
+    for (const f of files) {
+      if (f.thumbnailLink) thumbUrlCache.set(f.id, { url: f.thumbnailLink, expires: ttl })
+    }
+
+    allFiles.push(...files)
+    pageToken = data.nextPageToken
+  } while (pageToken)
+
+  return allFiles
 }
 
 export async function proxyThumbnail(fileId: string, saJson: string): Promise<Response> {
-  let thumbUrl = thumbUrlCache.get(fileId)
+  validateId(fileId, 'fileId')
+
+  const cached = thumbUrlCache.get(fileId)
+  let thumbUrl = cached && cached.expires > Date.now() ? cached.url : undefined
 
   if (!thumbUrl) {
     const sa: ServiceAccount = JSON.parse(saJson)
@@ -112,7 +140,7 @@ export async function proxyThumbnail(fileId: string, saJson: string): Promise<Re
     const meta = await res.json() as { thumbnailLink?: string }
     if (!meta.thumbnailLink) return new Response('No thumbnail available', { status: 404 })
     thumbUrl = meta.thumbnailLink
-    thumbUrlCache.set(fileId, thumbUrl)
+    thumbUrlCache.set(fileId, { url: thumbUrl, expires: Date.now() + 30 * 60 * 1000 })
   }
 
   const url = thumbUrl.replace(/=s\d+$/, '=s600')
@@ -122,7 +150,7 @@ export async function proxyThumbnail(fileId: string, saJson: string): Promise<Re
   return new Response(imgRes.body, {
     headers: {
       'Content-Type': imgRes.headers.get('Content-Type') || 'image/jpeg',
-      'Cache-Control': 'public, max-age=3600',
+      'Cache-Control': 'public, max-age=1800',
     },
   })
 }
