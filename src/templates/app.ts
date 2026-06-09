@@ -714,11 +714,15 @@ export function getAppHtml(): string {
               <Card key={photo.id} style={{ padding:0, overflow:"hidden", display:"flex", flexDirection:"column" }}>
                 {/* Preview */}
                 <div style={{ position:"relative", background:"rgba(28,43,43,0.06)", aspectRatio:"4/3", display:"flex", alignItems:"center", justifyContent:"center", overflow:"hidden" }}>
-                  {photo.url && isDirectImageUrl(photo.url) && !failed
-                    ? <img src={photo.url} alt={photo.name}
+                  {(photo.driveFileId && !failed)
+                    ? <img src={"/api/drive/thumb/" + photo.driveFileId} alt={photo.name}
                         onError={() => markFailed(photo.id)}
                         style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
-                    : <Icon name="image" size={36} color="var(--fg-3)" />
+                    : (photo.url && isDirectImageUrl(photo.url) && !failed)
+                      ? <img src={photo.url} alt={photo.name}
+                          onError={() => markFailed(photo.id)}
+                          style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
+                      : <Icon name="image" size={36} color="var(--fg-3)" />
                   }
                   {/* Overlay actions */}
                   <div style={{ position:"absolute", top:6, right:6, display:"flex", gap:4 }}>
@@ -1038,16 +1042,95 @@ export function getAppHtml(): string {
       <Field label="Fecha de incorporación" type="date" value={form.dateAdded||""} onChange={v => setForm(f => ({...f, dateAdded:v}))} />
     </Modal>
   );
-  const PhotoModal = ({ form, setForm, onSave, onClose }) => (
-    <Modal title={form.id ? "Editar foto" : "Nueva foto"} onClose={onClose} onSave={onSave}>
-      <Field label="Nombre" value={form.name||""} onChange={v => setForm(f => ({...f, name:v}))} required placeholder="Ej. Fachada del inmueble" />
-      <Field label="Fuente" as="select" value={form.source||"icloud"} onChange={v => setForm(f => ({...f, source:v}))} options={PHOTO_SOURCES.map(s => ({ value:s.id, label:s.label }))} />
-      <Field label="URL / enlace a la foto" type="url" value={form.url||""} onChange={v => setForm(f => ({...f, url:v}))} placeholder="https://…" />
-      <Field label="Descripción" value={form.caption||""} onChange={v => setForm(f => ({...f, caption:v}))} placeholder="Breve descripción de la imagen" />
-      <Field label="Etiquetas (separadas por coma)" value={form.tags||""} onChange={v => setForm(f => ({...f, tags:v}))} placeholder="Ej. exterior, daños, 2024" />
-      <Field label="Fecha" type="date" value={form.dateAdded||""} onChange={v => setForm(f => ({...f, dateAdded:v}))} />
-    </Modal>
-  );
+  const PhotoModal = ({ form, setForm, onSave, onClose }) => {
+    const [driveUrl, setDriveUrl]     = useState("");
+    const [driveFiles, setDriveFiles] = useState(null);
+    const [driveLoading, setDriveLoading] = useState(false);
+    const [driveError, setDriveError] = useState("");
+
+    const loadFolder = async () => {
+      const m = driveUrl.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+      if (!m) { setDriveError("URL de carpeta inválida. Debe contener /folders/…"); return; }
+      setDriveLoading(true); setDriveError("");
+      try {
+        const r = await fetch("/api/drive/folder/" + m[1]);
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
+        setDriveFiles(data.files || []);
+      } catch(e) {
+        setDriveError("Error: " + e.message);
+      } finally {
+        setDriveLoading(false);
+      }
+    };
+
+    const pickFile = file => {
+      setForm(f => ({
+        ...f,
+        name:        f.name || file.name.replace(/\.[^.]+$/, ""),
+        source:      "google_drive",
+        url:         file.webViewLink || "",
+        driveFileId: file.id,
+      }));
+      setDriveFiles(null);
+      setDriveUrl("");
+    };
+
+    return (
+      <Modal title={form.id ? "Editar foto" : "Nueva foto"} onClose={onClose} onSave={onSave}>
+        {/* Drive folder picker */}
+        <div style={{ background:"rgba(28,43,43,0.04)", borderRadius:"var(--radius-md)", padding:"10px 12px", marginBottom:14 }}>
+          <div style={{ fontSize:11, fontWeight:600, color:"var(--fg-3)", marginBottom:6, textTransform:"uppercase", letterSpacing:"0.07em" }}>
+            Importar desde Google Drive
+          </div>
+          <div style={{ display:"flex", gap:6 }}>
+            <input type="url" value={driveUrl} onChange={e => setDriveUrl(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && loadFolder()}
+              placeholder="https://drive.google.com/drive/folders/…"
+              style={{ flex:1, fontSize:12, padding:"6px 8px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.18)", background:"var(--input-bg)", color:"var(--fg-1)", fontFamily:"var(--font-sans)" }} />
+            <button type="button" onClick={loadFolder} disabled={driveLoading || !driveUrl.trim()}
+              style={{ fontSize:12, padding:"6px 12px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.18)", background:"var(--input-bg)", color:"var(--fg-2)", cursor:"pointer", flexShrink:0, fontFamily:"var(--font-sans)" }}>
+              {driveLoading ? "…" : "Cargar"}
+            </button>
+          </div>
+          {driveError && <div style={{ fontSize:11, color:"#B04A3A", marginTop:5 }}>{driveError}</div>}
+          {driveFiles !== null && driveFiles.length === 0 && (
+            <div style={{ fontSize:11, color:"var(--fg-3)", marginTop:6 }}>Sin imágenes en esta carpeta.</div>
+          )}
+          {driveFiles && driveFiles.length > 0 && (
+            <div style={{ marginTop:8, display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:5, maxHeight:180, overflowY:"auto" }}>
+              {driveFiles.map(file => (
+                <button key={file.id} type="button" onClick={() => pickFile(file)} title={file.name}
+                  style={{ padding:0, border:"2px solid transparent", borderRadius:"var(--radius-sm)", background:"rgba(28,43,43,0.06)", cursor:"pointer", overflow:"hidden", aspectRatio:"1", display:"flex", alignItems:"center", justifyContent:"center" }}
+                  onMouseEnter={e => e.currentTarget.style.borderColor = "#D27653"}
+                  onMouseLeave={e => e.currentTarget.style.borderColor = "transparent"}>
+                  <img src={"/api/drive/thumb/" + file.id} alt={file.name}
+                    style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        {/* Manual fields */}
+        <Field label="Nombre" value={form.name||""} onChange={v => setForm(f => ({...f, name:v}))} required placeholder="Ej. Fachada del inmueble" />
+        <Field label="Fuente" as="select" value={form.source||"icloud"} onChange={v => setForm(f => ({...f, source:v}))} options={PHOTO_SOURCES.map(s => ({ value:s.id, label:s.label }))} />
+        <Field label="URL / enlace a la foto" type="url" value={form.url||""} onChange={v => setForm(f => ({...f, url:v}))} placeholder="https://…" />
+        {form.driveFileId && (
+          <div style={{ fontSize:11, color:"var(--fg-3)", marginTop:-8, marginBottom:12, display:"flex", alignItems:"center", gap:6 }}>
+            <Icon name="check-circle" size={12} color="#639922" />
+            Foto vinculada de Drive (ID: {form.driveFileId.slice(0,12)}…)
+            <button type="button" onClick={() => setForm(f => ({...f, driveFileId:""}))}
+              style={{ fontSize:10, color:"#B04A3A", background:"none", border:"none", cursor:"pointer", padding:0, fontFamily:"var(--font-sans)" }}>
+              desvincular
+            </button>
+          </div>
+        )}
+        <Field label="Descripción" value={form.caption||""} onChange={v => setForm(f => ({...f, caption:v}))} placeholder="Breve descripción de la imagen" />
+        <Field label="Etiquetas (separadas por coma)" value={form.tags||""} onChange={v => setForm(f => ({...f, tags:v}))} placeholder="Ej. exterior, daños, 2024" />
+        <Field label="Fecha" type="date" value={form.dateAdded||""} onChange={v => setForm(f => ({...f, dateAdded:v}))} />
+      </Modal>
+    );
+  };
   const NoteModal = ({ form, setForm, onSave, onClose }) => (
     <Modal title={form.id ? "Editar nota" : "Nueva nota"} onClose={onClose} onSave={onSave}>
       <Field label="Título" value={form.title||""} onChange={v => setForm(f => ({...f, title:v}))} required />
