@@ -686,6 +686,7 @@ export function getAppHtml(): string {
   };
 
   // ── FotosView ───────────────────────────────────────────────────────────────
+  const isDirectImageUrl = url => /\.(jpe?g|png|gif|webp|bmp|svg)(\?|$)/i.test(url||"");
   const FotosView = ({ data, onAdd, onEdit, onDelete }) => {
     const [search, setSearch] = useState("");
     const [failedImgs, setFailedImgs] = useState({});
@@ -713,7 +714,7 @@ export function getAppHtml(): string {
               <Card key={photo.id} style={{ padding:0, overflow:"hidden", display:"flex", flexDirection:"column" }}>
                 {/* Preview */}
                 <div style={{ position:"relative", background:"rgba(28,43,43,0.06)", aspectRatio:"4/3", display:"flex", alignItems:"center", justifyContent:"center", overflow:"hidden" }}>
-                  {photo.url && !failed
+                  {photo.url && isDirectImageUrl(photo.url) && !failed
                     ? <img src={photo.url} alt={photo.name}
                         onError={() => markFailed(photo.id)}
                         style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
