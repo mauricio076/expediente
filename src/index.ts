@@ -3,12 +3,14 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { createToken, verifyToken } from './auth'
 import { getAppHtml } from './templates/app'
 import { getLoginHtml } from './templates/login'
+import { listFolderImages, proxyThumbnail } from './google-drive'
 
 type Bindings = {
   DB: D1Database
   APP_PASSWORD: string
   JWT_SECRET: string
   APP_USERNAME: string
+  GOOGLE_SERVICE_ACCOUNT_JSON: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -136,5 +138,32 @@ async function saveData(c: any) {
 
 app.put('/api/data', requireAPI, saveData)
 app.post('/api/data', requireAPI, saveData)
+
+// ── Google Drive proxy ─────────────────────────────────────────────────────
+
+app.get('/api/drive/folder/:folderId', requireAPI, async (c) => {
+  if (!c.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    return c.json({ error: 'Google Drive no configurado. Agrega el secreto GOOGLE_SERVICE_ACCOUNT_JSON.' }, 503)
+  }
+  try {
+    const files = await listFolderImages(c.req.param('folderId'), c.env.GOOGLE_SERVICE_ACCOUNT_JSON)
+    return c.json({ files })
+  } catch (err) {
+    console.error('Drive folder error:', err)
+    return c.json({ error: String(err) }, 500)
+  }
+})
+
+app.get('/api/drive/thumb/:fileId', requireAPI, async (c) => {
+  if (!c.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    return new Response('Google Drive no configurado', { status: 503 })
+  }
+  try {
+    return proxyThumbnail(c.req.param('fileId'), c.env.GOOGLE_SERVICE_ACCOUNT_JSON)
+  } catch (err) {
+    console.error('Drive thumb error:', err)
+    return new Response('Error', { status: 500 })
+  }
+})
 
 export default app
