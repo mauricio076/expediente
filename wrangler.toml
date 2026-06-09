@@ -15,7 +15,7 @@ APP_USERNAME = "admin"
 [[d1_databases]]
 binding = "DB"
 database_name = "expediente"
-database_id = "1b083118-eefe-4dee-b2df-3dc034054992"
+database_id = "8dfebeb0-4e74-4d30-96f5-9cd6d8c5df2a"
 
 [dev]
 port = 8787
