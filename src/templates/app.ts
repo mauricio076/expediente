@@ -1049,11 +1049,13 @@ export function getAppHtml(): string {
     const [driveError, setDriveError] = useState("");
 
     const loadFolder = async () => {
-      const m = driveUrl.match(/\/folders\/([a-zA-Z0-9_-]+)/);
-      if (!m) { setDriveError("URL de carpeta inválida. Debe contener /folders/…"); return; }
+      const idx = driveUrl.indexOf('/folders/');
+      if (idx < 0) { setDriveError("URL de carpeta inválida. Debe contener /folders/..."); return; }
+      const folderId = driveUrl.slice(idx + 9).split('?')[0].split('#')[0].split('/')[0];
+      if (!folderId) { setDriveError("No se pudo extraer el ID de la carpeta."); return; }
       setDriveLoading(true); setDriveError("");
       try {
-        const r = await fetch("/api/drive/folder/" + m[1]);
+        const r = await fetch("/api/drive/folder/" + folderId);
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
         setDriveFiles(data.files || []);
