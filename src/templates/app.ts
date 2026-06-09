@@ -686,7 +686,10 @@ export function getAppHtml(): string {
   };
 
   // ── FotosView ───────────────────────────────────────────────────────────────
-  const isDirectImageUrl = url => /\.(jpe?g|png|gif|webp|bmp|svg)(\?|$)/i.test(url||"");
+  const isDirectImageUrl = url => {
+    const clean = (url||"").split('?')[0].split('#')[0].toLowerCase();
+    return ['.jpg','.jpeg','.png','.gif','.webp','.bmp','.svg'].some(ext => clean.endsWith(ext));
+  };
   const FotosView = ({ data, onAdd, onEdit, onDelete }) => {
     const [search, setSearch] = useState("");
     const [failedImgs, setFailedImgs] = useState({});
