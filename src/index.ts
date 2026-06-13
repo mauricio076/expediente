@@ -7,6 +7,7 @@ import { listFolderImages, proxyThumbnail } from './google-drive'
 
 type Bindings = {
   DB: D1Database
+  STORAGE: R2Bucket
   APP_PASSWORD: string
   JWT_SECRET: string
   APP_USERNAME: string
@@ -164,6 +165,46 @@ app.get('/api/drive/thumb/:fileId', requireAPI, async (c) => {
     console.error('Drive thumb error:', err)
     return new Response('Error', { status: 500 })
   }
+})
+
+// ── R2 storage ─────────────────────────────────────────────────────────────
+
+app.post('/api/upload', requireAPI, async (c) => {
+  if (!c.env.STORAGE) return c.json({ error: 'Storage no configurado' }, 503)
+  const fd = await c.req.formData()
+  const file = fd.get('file') as File | null
+  if (!file || typeof file === 'string') return c.json({ error: 'No file' }, 400)
+  const name = file.name || 'file'
+  const dotIdx = name.lastIndexOf('.')
+  const ext = dotIdx >= 0 ? name.slice(dotIdx) : ''
+  const rand = Math.random().toString(36).slice(2, 8)
+  const key = 'doc-' + Date.now() + '-' + rand + ext
+  await c.env.STORAGE.put(key, file.stream(), {
+    httpMetadata: { contentType: file.type || 'application/octet-stream' },
+    customMetadata: { originalName: name },
+  })
+  return c.json({ key, name, mimeType: file.type, size: file.size })
+})
+
+app.get('/api/file/:key', requireAPI, async (c) => {
+  if (!c.env.STORAGE) return new Response('Storage no configurado', { status: 503 })
+  const key = c.req.param('key')
+  const obj = await c.env.STORAGE.get(key)
+  if (!obj) return new Response('Not found', { status: 404 })
+  const headers = new Headers()
+  obj.writeHttpMetadata(headers)
+  if (c.req.query('dl') === '1') {
+    const fname = (obj.customMetadata?.originalName || key).replace(/"/g, '')
+    headers.set('Content-Disposition', 'attachment; filename="' + fname + '"')
+  }
+  headers.set('Cache-Control', 'private, max-age=3600')
+  return new Response(obj.body, { headers })
+})
+
+app.delete('/api/file/:key', requireAPI, async (c) => {
+  if (!c.env.STORAGE) return c.json({ error: 'Storage no configurado' }, 503)
+  await c.env.STORAGE.delete(c.req.param('key'))
+  return c.json({ ok: true })
 })
 
 export default app
