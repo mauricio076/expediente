@@ -108,11 +108,12 @@ export function getAppHtml(): string {
     { id:"other",     label:"Otro",         color:"gray"   },
   ];
   const DOC_TYPES = [
-    { id:"google_drive", label:"Google Drive", icon:"hard-drive" },
-    { id:"icloud",       label:"iCloud",       icon:"cloud"      },
-    { id:"dropbox",      label:"Dropbox",      icon:"cloud"      },
-    { id:"local",        label:"Disco local",  icon:"laptop-minimal" },
-    { id:"other",        label:"Otro enlace",  icon:"link"       },
+    { id:"r2",           label:"Almacenamiento", icon:"server"       },
+    { id:"google_drive", label:"Google Drive",   icon:"hard-drive"   },
+    { id:"icloud",       label:"iCloud",         icon:"cloud"        },
+    { id:"dropbox",      label:"Dropbox",        icon:"cloud"        },
+    { id:"local",        label:"Disco local",    icon:"laptop-minimal" },
+    { id:"other",        label:"Otro enlace",    icon:"link"         },
   ];
   const PHOTO_SOURCES = [
     { id:"icloud",        label:"iCloud",         icon:"cloud"       },
@@ -583,9 +584,10 @@ export function getAppHtml(): string {
                       {ev.attachedDocs.map(docId => {
                         const doc = data.documents.find(d => d.id === docId);
                         if (!doc) return null;
-                        const dt = DOC_TYPES.find(d => d.id === doc.type) || DOC_TYPES[4];
+                        const dt = DOC_TYPES.find(d => d.id === doc.type) || DOC_TYPES[DOC_TYPES.length - 1];
+                        const docHref = doc.type === 'r2' && doc.r2Key ? '/api/file/' + doc.r2Key : (doc.url || '#');
                         return (
-                          <a key={docId} href={doc.url || "#"} target="_blank" rel="noreferrer" style={{
+                          <a key={docId} href={docHref} target="_blank" rel="noreferrer" style={{
                             display: "inline-flex", alignItems: "center", gap: 4,
                             fontSize: 11, background: "rgba(28,43,43,0.05)",
                             border: "1px solid rgba(28,43,43,0.12)", borderRadius: "var(--radius-sm)",
@@ -633,6 +635,7 @@ export function getAppHtml(): string {
   const DocumentosView = ({ data, onAdd, onEdit, onDelete }) => {
     const [search, setSearch] = useState("");
     const [filterType, setFilterType] = useState("all");
+    const [failedThumbs, setFailedThumbs] = useState({});
     const filtered = data.documents.filter(doc => {
       const q = search.toLowerCase();
       const matchSearch = !q || doc.name.toLowerCase().includes(q) || (doc.tags || []).some(t => t.toLowerCase().includes(q));
@@ -650,27 +653,39 @@ export function getAppHtml(): string {
             {DOC_TYPES.map(dt => <option key={dt.id} value={dt.id}>{dt.label}</option>)}
           </select>
         </div>
-        {filtered.length === 0 && <EmptyState icon="files" message={search ? "Sin resultados para «" + search + "»." : "Sin documentos registrados."} action={
+        {filtered.length === 0 && <EmptyState icon="files" message={search ? "Sin resultados para \xAB" + search + "\xBB." : "Sin documentos registrados."} action={
           !search && <Btn onClick={onAdd} variant="outline"><Icon name="plus" size={13} />Agregar documento</Btn>
         } />}
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {filtered.map(doc => {
-            const dt = DOC_TYPES.find(d => d.id === doc.type) || DOC_TYPES[4];
+            const dt = DOC_TYPES.find(d => d.id === doc.type) || DOC_TYPES[DOC_TYPES.length - 1];
+            const r2Img = doc.type === 'r2' && doc.r2Key && isImage(doc.mimeType) && !failedThumbs[doc.id];
             return (
               <Card key={doc.id} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <Icon name={dt.icon} size={20} color="var(--fg-3)" />
+                {r2Img
+                  ? <img src={"/api/file/" + doc.r2Key}
+                      onError={() => setFailedThumbs(f => ({ ...f, [doc.id]: true }))}
+                      style={{ width:48, height:48, objectFit:"cover", borderRadius:"var(--radius-sm)", flexShrink:0, background:"rgba(28,43,43,0.06)" }} />
+                  : <Icon name={doc.type === 'r2' ? mimeIcon(doc.mimeType) : dt.icon} size={20} color="var(--fg-3)" />
+                }
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{doc.name}</div>
                   <div style={{ fontSize: 11, color: "var(--fg-3)", marginTop: 3, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                     <span>{dt.label}</span>
-                    {doc.dateAdded && <span>· {doc.dateAdded}</span>}
+                    {doc.size > 0 && <span>\xB7 {fmtSize(doc.size)}</span>}
+                    {doc.dateAdded && <span>\xB7 {doc.dateAdded}</span>}
                     {(doc.tags || []).map(t => (
                       <span key={t} style={{ background: "rgba(28,43,43,0.06)", border: "1px solid rgba(28,43,43,0.12)", borderRadius: 999, fontSize: 10, padding: "1px 6px" }}>{t}</span>
                     ))}
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 4, flexShrink: 0, alignItems: "center" }}>
-                  {doc.url && (
+                  {doc.type === 'r2' && doc.r2Key && (
+                    <a href={"/api/file/" + doc.r2Key + "?dl=1"} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "5px 8px", borderRadius: "var(--radius-sm)", border: "1px solid rgba(28,43,43,0.14)", color: "var(--fg-2)", textDecoration: "none" }}>
+                      <Icon name="download" size={13} />
+                    </a>
+                  )}
+                  {doc.url && doc.type !== 'r2' && (
                     <a href={doc.url} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "5px 8px", borderRadius: "var(--radius-sm)", border: "1px solid rgba(28,43,43,0.14)", color: "var(--fg-2)", textDecoration: "none" }}>
                       <Icon name="external-link" size={13} />
                     </a>
@@ -689,6 +704,21 @@ export function getAppHtml(): string {
   const isDirectImageUrl = url => {
     const clean = (url||"").split('?')[0].split('#')[0].toLowerCase();
     return ['.jpg','.jpeg','.png','.gif','.webp','.bmp','.svg'].some(ext => clean.endsWith(ext));
+  };
+  const fmtSize = bytes => {
+    if (!bytes) return '';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1048576).toFixed(1) + ' MB';
+  };
+  const isImage = mime => (mime || '').toLowerCase().startsWith('image/');
+  const mimeIcon = mime => {
+    const m = (mime || '').toLowerCase();
+    if (m.startsWith('image/')) return 'image';
+    if (m === 'application/pdf') return 'file-text';
+    if (m.startsWith('video/')) return 'video';
+    if (m.startsWith('audio/')) return 'music';
+    return 'file';
   };
   const FotosView = ({ data, onAdd, onEdit, onDelete }) => {
     const [search, setSearch] = useState("");
@@ -800,6 +830,72 @@ export function getAppHtml(): string {
     );
   };
 
+  // ── PersonText ──────────────────────────────────────────────────────────────
+  const PersonText = ({ text, people }) => {
+    const [popup, setPopup] = useState(null);
+    if (!text) return null;
+    const validPeople = (people || []).filter(p => p.name && p.name.length > 2);
+    if (validPeople.length === 0) return <span style={{ whiteSpace:"pre-wrap" }}>{text}</span>;
+    const sorted = [...validPeople].sort((a,b) => b.name.length - a.name.length);
+    const matches = [];
+    for (const person of sorted) {
+      let from = 0;
+      while (true) {
+        const idx = text.indexOf(person.name, from);
+        if (idx === -1) break;
+        const overlaps = matches.some(m => idx < m.end && idx + person.name.length > m.start);
+        if (!overlaps) matches.push({ start:idx, end:idx + person.name.length, person });
+        from = idx + 1;
+      }
+    }
+    matches.sort((a,b) => a.start - b.start);
+    const parts = []; let cur = 0;
+    for (const m of matches) {
+      if (m.start > cur) parts.push({ t:"text", s:text.slice(cur, m.start) });
+      parts.push({ t:"name", s:text.slice(m.start, m.end), p:m.person });
+      cur = m.end;
+    }
+    if (cur < text.length) parts.push({ t:"text", s:text.slice(cur) });
+    return (
+      <span style={{ whiteSpace:"pre-wrap" }}>
+        {parts.map((part, i) => {
+          if (part.t === "text") return <span key={i}>{part.s}</span>;
+          const pr = PERSON_ROLES.find(r => r.id === part.p.role) || PERSON_ROLES[4];
+          const c = COLORS[pr.color] || COLORS.gray;
+          return (
+            <span key={i}
+              style={{ borderBottom:"2px dotted " + c.border, color:c.text, cursor:"pointer" }}
+              onMouseEnter={e => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                setPopup({ p:part.p, x:rect.left, y:rect.bottom + 6 });
+              }}
+              onMouseLeave={() => setPopup(null)}
+            >{part.s}</span>
+          );
+        })}
+        {popup && (
+          <span style={{ position:"fixed", left:popup.x, top:popup.y, zIndex:950, pointerEvents:"none", display:"block" }}>
+            <span style={{ display:"block", background:"#FFFFFF", border:"1px solid rgba(28,43,43,0.16)", borderRadius:"var(--radius-md)", padding:"10px 12px", boxShadow:"0 8px 24px -8px rgba(28,43,43,0.24)", minWidth:160, maxWidth:240, animation:"fadein 120ms ease-out" }}>
+              {(() => {
+                const p = popup.p;
+                const pr = PERSON_ROLES.find(r => r.id === p.role) || PERSON_ROLES[4];
+                return (
+                  <>
+                    <span style={{ display:"block", fontSize:11, fontWeight:600, color:"var(--fg-3)", marginBottom:4 }}>{pr.label}</span>
+                    <span style={{ display:"block", fontSize:13, fontWeight:500, marginBottom:6 }}>{p.name}</span>
+                    {p.phone && <span style={{ display:"block", fontSize:12, color:"var(--fg-2)", marginBottom:2 }}><span style={{ opacity:0.5, marginRight:4 }}>tel</span>{p.phone}</span>}
+                    {p.email && <span style={{ display:"block", fontSize:12, color:"var(--fg-2)", marginBottom:2 }}><span style={{ opacity:0.5, marginRight:4 }}>@</span>{p.email}</span>}
+                    {p.notes && <span style={{ display:"block", fontSize:11, color:"var(--fg-3)", marginTop:4, lineHeight:1.5 }}>{p.notes}</span>}
+                  </>
+                );
+              })()}
+            </span>
+          </span>
+        )}
+      </span>
+    );
+  };
+
   // ── NotasView ───────────────────────────────────────────────────────────────
   const NotasView = ({ data, onAdd, onEdit, onDelete }) => {
     const notes = data.notes || [];
@@ -821,7 +917,9 @@ export function getAppHtml(): string {
                   <ActionBtns onEdit={() => onEdit(n)} onDelete={() => onDelete(n.id)} />
                 </div>
                 {(n.date || n.author) && <div style={{ fontSize: 11, color: "var(--fg-3)", marginBottom: 8 }}>{n.date}{n.author && <span> · {n.author}</span>}</div>}
-                <p style={{ margin: 0, fontSize: 13, color: "var(--fg-2)", lineHeight: 1.75, whiteSpace: "pre-wrap" }}>{n.content}</p>
+                <p style={{ margin: 0, fontSize: 13, color: "var(--fg-2)", lineHeight: 1.75 }}>
+                  <PersonText text={n.content} people={data.people || []} />
+                </p>
               </Card>
             );
           })}
@@ -1036,15 +1134,60 @@ export function getAppHtml(): string {
       <Field label="Descripción" as="textarea" rows={3} value={form.description||""} onChange={v => setForm(f => ({...f, description:v}))} placeholder="Detalles adicionales…" />
     </Modal>
   );
-  const DocModal = ({ form, setForm, onSave, onClose }) => (
-    <Modal title={form.id ? "Editar documento" : "Nuevo documento"} onClose={onClose} onSave={onSave}>
-      <Field label="Nombre del archivo" value={form.name||""} onChange={v => setForm(f => ({...f, name:v}))} required placeholder="Ej. Acta de nacimiento.pdf" />
-      <Field label="Fuente" as="select" value={form.type||"google_drive"} onChange={v => setForm(f => ({...f, type:v}))} options={DOC_TYPES.map(t => ({ value:t.id, label:t.label }))} />
-      <Field label="URL / enlace al archivo" type="url" value={form.url||""} onChange={v => setForm(f => ({...f, url:v}))} placeholder="https://…" />
-      <Field label="Etiquetas (separadas por coma)" value={form.tags||""} onChange={v => setForm(f => ({...f, tags:v}))} placeholder="Ej. legal, original, pendiente" />
-      <Field label="Fecha de incorporación" type="date" value={form.dateAdded||""} onChange={v => setForm(f => ({...f, dateAdded:v}))} />
-    </Modal>
-  );
+  const DocModal = ({ form, setForm, onSave, onClose }) => {
+    const [uploading, setUploading] = useState(false);
+    const [uploadErr, setUploadErr] = useState("");
+    const fileRef = useRef(null);
+    const handleFile = async e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      setUploading(true); setUploadErr("");
+      try {
+        const fd = new FormData();
+        fd.append('file', file);
+        const r = await fetch('/api/upload', { method:'POST', body:fd });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+        setForm(f => ({ ...f, name: f.name || file.name, type:'r2', r2Key:d.key, mimeType:d.mimeType, size:d.size }));
+      } catch(err) {
+        setUploadErr("Error: " + err.message);
+      } finally {
+        setUploading(false);
+      }
+    };
+    return (
+      <Modal title={form.id ? "Editar documento" : "Nuevo documento"} onClose={onClose} onSave={onSave}>
+        <div style={{ background:"rgba(28,43,43,0.04)", borderRadius:"var(--radius-md)", padding:"10px 12px", marginBottom:14 }}>
+          <div style={{ fontSize:11, fontWeight:600, color:"var(--fg-3)", marginBottom:6, textTransform:"uppercase", letterSpacing:"0.07em" }}>Subir archivo</div>
+          {form.r2Key ? (
+            <div style={{ display:"flex", alignItems:"center", gap:8, fontSize:12, padding:"4px 0" }}>
+              <Icon name={mimeIcon(form.mimeType)} size={16} color="var(--fg-3)" />
+              <span style={{ flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{form.name || form.r2Key}</span>
+              {form.size > 0 && <span style={{ color:"var(--fg-3)", flexShrink:0 }}>{fmtSize(form.size)}</span>}
+              <button type="button" onClick={() => setForm(f => ({ ...f, r2Key:"", mimeType:"", size:0 }))}
+                style={{ fontSize:11, color:"#B04A3A", background:"none", border:"none", cursor:"pointer", padding:0, fontFamily:"var(--font-sans)", flexShrink:0 }}>
+                quitar
+              </button>
+            </div>
+          ) : (
+            <>
+              <input ref={fileRef} type="file" onChange={handleFile} style={{ display:"none" }} />
+              <Btn onClick={() => fileRef.current && fileRef.current.click()} variant="outline" disabled={uploading}>
+                <Icon name={uploading ? "loader" : "upload"} size={13} style={uploading ? { animation:"spin 1s linear infinite" } : {}} />
+                {uploading ? "Subiendo…" : "Seleccionar archivo"}
+              </Btn>
+              {uploadErr && <div style={{ fontSize:11, color:"#B04A3A", marginTop:5 }}>{uploadErr}</div>}
+            </>
+          )}
+        </div>
+        <Field label="Nombre del archivo" value={form.name||""} onChange={v => setForm(f => ({...f, name:v}))} required placeholder="Ej. Acta de nacimiento.pdf" />
+        <Field label="Fuente" as="select" value={form.type||"google_drive"} onChange={v => setForm(f => ({...f, type:v}))} options={DOC_TYPES.map(t => ({ value:t.id, label:t.label }))} />
+        {form.type !== 'r2' && <Field label="URL / enlace al archivo" type="url" value={form.url||""} onChange={v => setForm(f => ({...f, url:v}))} placeholder="https://…" />}
+        <Field label="Etiquetas (separadas por coma)" value={form.tags||""} onChange={v => setForm(f => ({...f, tags:v}))} placeholder="Ej. legal, original, pendiente" />
+        <Field label="Fecha de incorporaci\xF3n" type="date" value={form.dateAdded||""} onChange={v => setForm(f => ({...f, dateAdded:v}))} />
+      </Modal>
+    );
+  };
   const PhotoModal = ({ form, setForm, onSave, onClose }) => {
     const [driveUrl, setDriveUrl]     = useState("");
     const [driveFiles, setDriveFiles] = useState(null);
@@ -1339,7 +1482,7 @@ export function getAppHtml(): string {
     const openAdd = type => {
       const defaults = {
         event:   { date:today, type:"legal",       title:"", description:"", attachedDocs:[] },
-        doc:     { name:"",    type:"google_drive", url:"",  tags:"",         dateAdded:today  },
+        doc:     { name:"", type:"google_drive", url:"", tags:"", dateAdded:today, r2Key:"", mimeType:"", size:0 },
         photo:   { name:"",    source:"icloud",     url:"",  caption:"", tags:"", dateAdded:today },
         note:    { date:today, type:"other",        title:"", content:"",    author:""        },
         pending: { date:today, requestedBy:"",      description:"", done:false               },
@@ -1409,6 +1552,13 @@ export function getAppHtml(): string {
       case: () => { upd({ ...data, caseInfo: form }); closeModal(); },
     };
 
+    const deleteDoc = async id => {
+      const doc = (data.documents || []).find(d => d.id === id);
+      if (doc && doc.type === 'r2' && doc.r2Key) {
+        await fetch('/api/file/' + doc.r2Key, { method:'DELETE' }).catch(() => {});
+      }
+      upd({ ...data, documents: (data.documents || []).filter(d => d.id !== id) });
+    };
     const del = {
       event:   id => upd({ ...data, events:         data.events.filter(e => e.id !== id) }),
       doc:     id => upd({ ...data, documents:       data.documents.filter(d => d.id !== id) }),
@@ -1470,7 +1620,7 @@ export function getAppHtml(): string {
             {tab==="pending"  && <PendientesView  data={data} onToggle={togglePending} onAdd={() => openAdd("pending")} onEdit={p => openEdit("pending",p)} onDelete={del.pending} />}
             {tab==="dates"    && <FechasView      data={data} onAdd={() => openAdd("date")}    onEdit={d => openEdit("date",d)}    onDelete={del.date}    />}
             {tab==="timeline" && <TimelineView    data={data} onAdd={() => openAdd("event")}   onEdit={e => openEdit("event",e)}   onDelete={del.event}   onToggleDocLink={toggleDocLink} />}
-            {tab==="docs"     && <DocumentosView  data={data} onAdd={() => openAdd("doc")}     onEdit={d => openEdit("doc",d)}     onDelete={del.doc}     />}
+            {tab==="docs"     && <DocumentosView  data={data} onAdd={() => openAdd("doc")}     onEdit={d => openEdit("doc",d)}     onDelete={deleteDoc}   />}
             {tab==="photos"   && <FotosView       data={data} onAdd={() => openAdd("photo")}   onEdit={p => openEdit("photo",p)}   onDelete={del.photo}   />}
             {tab==="people"   && <PersonasView    data={data} onAdd={() => openAdd("person")}  onEdit={p => openEdit("person",p)}  onDelete={del.person}  />}
             {tab==="notes"    && <NotasView       data={data} onAdd={() => openAdd("note")}    onEdit={n => openEdit("note",n)}    onDelete={del.note}    />}

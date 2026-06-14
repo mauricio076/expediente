@@ -17,6 +17,10 @@ binding = "DB"
 database_name = "expediente"
 database_id = "8dfebeb0-4e74-4d30-96f5-9cd6d8c5df2a"
 
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "expediente-docs"
+
 [dev]
 port = 8787
 
@@ -39,6 +43,10 @@ routes = [
 binding = "DB"
 database_name = "expediente"
 database_id = "8dfebeb0-4e74-4d30-96f5-9cd6d8c5df2a"
+
+[[env.dev.r2_buckets]]
+binding = "STORAGE"
+bucket_name = "expediente-docs"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # PRODUCTION environment  →  https://casos.axlotl.dev   (not used yet; for later)
