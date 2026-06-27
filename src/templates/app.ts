@@ -116,8 +116,10 @@ export function getAppHtml(): string {
     { id:"other",        label:"Otro enlace",    icon:"link"         },
   ];
   const PHOTO_SOURCES = [
+    { id:"google_drive",  label:"Google Drive",   icon:"hard-drive"  },
     { id:"icloud",        label:"iCloud",         icon:"cloud"       },
     { id:"google_photos", label:"Google Fotos",   icon:"image"       },
+    { id:"onedrive",      label:"OneDrive",       icon:"cloud"       },
     { id:"dropbox",       label:"Dropbox",        icon:"cloud"       },
     { id:"url",           label:"URL directa",    icon:"link"        },
     { id:"other",         label:"Otro",           icon:"image"       },
@@ -705,6 +707,38 @@ export function getAppHtml(): string {
     const clean = (url||"").split('?')[0].split('#')[0].toLowerCase();
     return ['.jpg','.jpeg','.png','.gif','.webp','.bmp','.svg'].some(ext => clean.endsWith(ext));
   };
+  const isDirectVideoUrl = url => {
+    const clean = (url||"").split('?')[0].split('#')[0].toLowerCase();
+    return ['.mp4','.webm','.ogg','.ogv','.mov','.m4v','.mkv'].some(ext => clean.endsWith(ext));
+  };
+  // True if this gallery item is a video (Drive-picked or a direct video link)
+  const isVideoItem = photo => {
+    if ((photo.mimeType||"").toLowerCase().startsWith('video/')) return true;
+    if (photo.kind === 'video') return true;
+    if (!photo.driveFileId && isDirectVideoUrl(photo.url)) return true;
+    return false;
+  };
+  // Turn a Dropbox / OneDrive share link into a directly playable URL.
+  const toPlayableUrl = url => {
+    if (!url) return url;
+    try {
+      const u = new URL(url);
+      if (u.hostname.includes('dropbox.com')) {
+        u.searchParams.delete('dl');
+        u.searchParams.set('raw', '1');
+        return u.toString();
+      }
+      if (u.hostname.includes('1drv.ms') || u.hostname.includes('onedrive.live.com') || u.hostname.includes('sharepoint.com')) {
+        u.searchParams.set('download', '1');
+        return u.toString();
+      }
+    } catch (e) {}
+    return url;
+  };
+  // Resolve the playable source for a video gallery item.
+  const videoSrc = photo => photo.driveFileId
+    ? ("/api/drive/media/" + photo.driveFileId)
+    : toPlayableUrl(photo.url);
   const fmtSize = bytes => {
     if (!bytes) return '';
     if (bytes < 1024) return bytes + ' B';
@@ -723,6 +757,7 @@ export function getAppHtml(): string {
   const FotosView = ({ data, onAdd, onEdit, onDelete }) => {
     const [search, setSearch] = useState("");
     const [failedImgs, setFailedImgs] = useState({});
+    const [playing, setPlaying] = useState(null);
     const photos = data.photos || [];
     const filtered = photos.filter(p => {
       const q = search.toLowerCase();
@@ -731,31 +766,49 @@ export function getAppHtml(): string {
     const markFailed = id => setFailedImgs(f => ({ ...f, [id]: true }));
     return (
       <div>
-        <SectionHeader title="Fotos" subtitle="Registro visual vinculado al caso."
+        <SectionHeader title="Fotos y videos" subtitle="Registro visual vinculado al caso."
           action={<Btn onClick={onAdd} variant="outline"><Icon name="plus" size={13} />Agregar</Btn>} />
         <div style={{ marginBottom: 14 }}>
           <SearchBar value={search} onChange={setSearch} placeholder="Buscar por nombre, descripción o etiqueta…" />
         </div>
-        {filtered.length === 0 && <EmptyState icon="image" message={search ? "Sin resultados para «" + search + "»." : "Sin fotos registradas."} action={
-          !search && <Btn onClick={onAdd} variant="outline"><Icon name="plus" size={13} />Agregar foto</Btn>
+        {filtered.length === 0 && <EmptyState icon="image" message={search ? "Sin resultados para «" + search + "»." : "Sin fotos ni videos registrados."} action={
+          !search && <Btn onClick={onAdd} variant="outline"><Icon name="plus" size={13} />Agregar</Btn>
         } />}
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(180px, 1fr))", gap:12 }}>
           {filtered.map(photo => {
-            const src = PHOTO_SOURCES.find(s => s.id === photo.source) || PHOTO_SOURCES[4];
+            const src = PHOTO_SOURCES.find(s => s.id === photo.source) || PHOTO_SOURCES.find(s => s.id === "other");
             const failed = failedImgs[photo.id];
+            const isVid = isVideoItem(photo);
             return (
               <Card key={photo.id} style={{ padding:0, overflow:"hidden", display:"flex", flexDirection:"column" }}>
                 {/* Preview */}
                 <div style={{ position:"relative", background:"rgba(28,43,43,0.06)", aspectRatio:"4/3", display:"flex", alignItems:"center", justifyContent:"center", overflow:"hidden" }}>
-                  {(photo.driveFileId && !failed)
-                    ? <img src={"/api/drive/thumb/" + photo.driveFileId} alt={photo.name}
-                        onError={() => markFailed(photo.id)}
-                        style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
-                    : (photo.url && isDirectImageUrl(photo.url) && !failed)
-                      ? <img src={photo.url} alt={photo.name}
+                  {isVid
+                    ? <button type="button" onClick={() => setPlaying(photo)} title={"Reproducir " + photo.name}
+                        style={{ all:"unset", cursor:"pointer", width:"100%", height:"100%", position:"relative", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                        {(photo.driveFileId && !failed)
+                          ? <img src={"/api/drive/thumb/" + photo.driveFileId} alt={photo.name}
+                              onError={() => markFailed(photo.id)}
+                              style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
+                          : (photo.url && isDirectVideoUrl(photo.url) && !failed)
+                            ? <video src={videoSrc(photo)} preload="metadata" muted
+                                onError={() => markFailed(photo.id)}
+                                style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
+                            : <Icon name="video" size={36} color="var(--fg-3)" />
+                        }
+                        <span style={{ position:"absolute", display:"inline-flex", alignItems:"center", justifyContent:"center", width:44, height:44, borderRadius:"50%", background:"rgba(28,43,43,0.55)", backdropFilter:"blur(2px)", pointerEvents:"none" }}>
+                          <Icon name="play" size={20} color="#FFFFFF" />
+                        </span>
+                      </button>
+                    : (photo.driveFileId && !failed)
+                      ? <img src={"/api/drive/thumb/" + photo.driveFileId} alt={photo.name}
                           onError={() => markFailed(photo.id)}
                           style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
-                      : <Icon name="image" size={36} color="var(--fg-3)" />
+                      : (photo.url && isDirectImageUrl(photo.url) && !failed)
+                        ? <img src={photo.url} alt={photo.name}
+                            onError={() => markFailed(photo.id)}
+                            style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
+                        : <Icon name="image" size={36} color="var(--fg-3)" />
                   }
                   {/* Overlay actions */}
                   <div style={{ position:"absolute", top:6, right:6, display:"flex", gap:4 }}>
@@ -780,6 +833,7 @@ export function getAppHtml(): string {
                   <div style={{ fontSize:12, fontWeight:500, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{photo.name}</div>
                   {photo.caption && <div style={{ fontSize:11, color:"var(--fg-3)", marginTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{photo.caption}</div>}
                   <div style={{ fontSize:10, color:"var(--fg-3)", marginTop:4, display:"flex", gap:5, flexWrap:"wrap", alignItems:"center" }}>
+                    {isVid && <span style={{ display:"inline-flex", alignItems:"center", gap:3, color:"var(--accent)", fontWeight:600 }}><Icon name="video" size={10} color="var(--accent)" />Video</span>}
                     <span>{src.label}</span>
                     {photo.dateAdded && <span>· {photo.dateAdded}</span>}
                     {(photo.tags||[]).map(t => (
@@ -791,6 +845,22 @@ export function getAppHtml(): string {
             );
           })}
         </div>
+        {/* Video lightbox */}
+        {playing && (
+          <div onClick={() => setPlaying(null)} style={{ position:"fixed", inset:0, background:"rgba(28,43,43,0.78)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:950, padding:"1rem" }}>
+            <div onClick={e => e.stopPropagation()} style={{ position:"relative", width:"min(900px,100%)" }}>
+              <video src={videoSrc(playing)} controls autoPlay
+                style={{ width:"100%", maxHeight:"82vh", borderRadius:"var(--radius-lg)", background:"#000", display:"block" }} />
+              <div style={{ marginTop:8, display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
+                <div style={{ color:"#F3F1EC", fontSize:13, fontWeight:500, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{playing.name}</div>
+                <div style={{ display:"flex", gap:10, flexShrink:0, alignItems:"center" }}>
+                  {playing.url && <a href={playing.url} target="_blank" rel="noreferrer" style={{ color:"#F3F1EC", fontSize:12 }}>Abrir original</a>}
+                  <button type="button" onClick={() => setPlaying(null)} style={{ background:"rgba(255,255,255,0.9)", border:"none", borderRadius:"var(--radius-sm)", padding:"4px 10px", cursor:"pointer", fontSize:12, fontFamily:"var(--font-sans)" }}>Cerrar</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -971,7 +1041,7 @@ export function getAppHtml(): string {
     { id:"dates",    icon:"calendar-days",       label:"Fechas"         },
     { id:"timeline", icon:"timer",              label:"Timeline"       },
     { id:"docs",     icon:"files",              label:"Documentos"     },
-    { id:"photos",   icon:"image",              label:"Fotos"          },
+    { id:"photos",   icon:"image",              label:"Fotos y videos" },
     { id:"people",   icon:"users",              label:"Personas clave" },
     { id:"notes",    icon:"notebook-text",      label:"Notas"          },
     { id:"related",  icon:"folder-open",        label:"Relacionados"   },
@@ -1213,23 +1283,29 @@ export function getAppHtml(): string {
     };
 
     const pickFile = file => {
+      const vid = (file.mimeType||"").toLowerCase().startsWith('video/');
       setForm(f => ({
         ...f,
         name:        f.name || file.name.replace(/\.[^.]+$/, ""),
         source:      "google_drive",
         url:         file.webViewLink || "",
         driveFileId: file.id,
+        mimeType:    file.mimeType || "",
+        kind:        vid ? 'video' : 'image',
       }));
       setDriveFiles(null);
       setDriveUrl("");
     };
 
     return (
-      <Modal title={form.id ? "Editar foto" : "Nueva foto"} onClose={onClose} onSave={onSave}>
+      <Modal title={form.id ? "Editar foto o video" : "Nueva foto o video"} onClose={onClose} onSave={onSave}>
         {/* Drive folder picker */}
         <div style={{ background:"rgba(28,43,43,0.04)", borderRadius:"var(--radius-md)", padding:"10px 12px", marginBottom:14 }}>
           <div style={{ fontSize:11, fontWeight:600, color:"var(--fg-3)", marginBottom:6, textTransform:"uppercase", letterSpacing:"0.07em" }}>
             Importar desde Google Drive
+          </div>
+          <div style={{ fontSize:11, color:"var(--fg-3)", marginBottom:6 }}>
+            Pega el enlace de una carpeta compartida para elegir fotos y videos.
           </div>
           <div style={{ display:"flex", gap:6 }}>
             <input type="url" value={driveUrl} onChange={e => setDriveUrl(e.target.value)}
@@ -1243,37 +1319,48 @@ export function getAppHtml(): string {
           </div>
           {driveError && <div style={{ fontSize:11, color:"#B04A3A", marginTop:5 }}>{driveError}</div>}
           {driveFiles !== null && driveFiles.length === 0 && (
-            <div style={{ fontSize:11, color:"var(--fg-3)", marginTop:6 }}>Sin imágenes en esta carpeta.</div>
+            <div style={{ fontSize:11, color:"var(--fg-3)", marginTop:6 }}>Sin fotos ni videos en esta carpeta.</div>
           )}
           {driveFiles && driveFiles.length > 0 && (
             <div style={{ marginTop:8, display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:5, maxHeight:180, overflowY:"auto" }}>
-              {driveFiles.map(file => (
+              {driveFiles.map(file => {
+                const vid = (file.mimeType||"").toLowerCase().startsWith('video/');
+                return (
                 <button key={file.id} type="button" onClick={() => pickFile(file)} title={file.name}
-                  style={{ padding:0, border:"2px solid transparent", borderRadius:"var(--radius-sm)", background:"rgba(28,43,43,0.06)", cursor:"pointer", overflow:"hidden", aspectRatio:"1", display:"flex", alignItems:"center", justifyContent:"center" }}
+                  style={{ padding:0, border:"2px solid transparent", borderRadius:"var(--radius-sm)", background:"rgba(28,43,43,0.06)", cursor:"pointer", overflow:"hidden", aspectRatio:"1", display:"flex", alignItems:"center", justifyContent:"center", position:"relative" }}
                   onMouseEnter={e => e.currentTarget.style.borderColor = "#D27653"}
                   onMouseLeave={e => e.currentTarget.style.borderColor = "transparent"}>
                   <img src={"/api/drive/thumb/" + file.id} alt={file.name}
                     style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
+                  {vid && (
+                    <span style={{ position:"absolute", display:"inline-flex", alignItems:"center", justifyContent:"center", width:24, height:24, borderRadius:"50%", background:"rgba(28,43,43,0.55)", pointerEvents:"none" }}>
+                      <Icon name="play" size={12} color="#FFFFFF" />
+                    </span>
+                  )}
                 </button>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
         {/* Manual fields */}
         <Field label="Nombre" value={form.name||""} onChange={v => setForm(f => ({...f, name:v}))} required placeholder="Ej. Fachada del inmueble" />
         <Field label="Fuente" as="select" value={form.source||"icloud"} onChange={v => setForm(f => ({...f, source:v}))} options={PHOTO_SOURCES.map(s => ({ value:s.id, label:s.label }))} />
-        <Field label="URL / enlace a la foto" type="url" value={form.url||""} onChange={v => setForm(f => ({...f, url:v}))} placeholder="https://…" />
+        <Field label="URL / enlace (foto o video)" type="url" value={form.url||""} onChange={v => setForm(f => ({...f, url:v}))} placeholder="https://…" />
+        <div style={{ fontSize:10, color:"var(--fg-3)", marginTop:-8, marginBottom:12 }}>
+          Para videos: pega un enlace directo (.mp4, .webm…) o un enlace compartido de Dropbox / OneDrive y se reproducirá aquí.
+        </div>
         {form.driveFileId && (
           <div style={{ fontSize:11, color:"var(--fg-3)", marginTop:-8, marginBottom:12, display:"flex", alignItems:"center", gap:6 }}>
             <Icon name="check-circle" size={12} color="#639922" />
-            Foto vinculada de Drive (ID: {form.driveFileId.slice(0,12)}…)
-            <button type="button" onClick={() => setForm(f => ({...f, driveFileId:""}))}
+            {form.kind === 'video' ? 'Video' : 'Foto'} vinculado de Drive (ID: {form.driveFileId.slice(0,12)}…)
+            <button type="button" onClick={() => setForm(f => ({...f, driveFileId:"", mimeType:"", kind:""}))}
               style={{ fontSize:10, color:"#B04A3A", background:"none", border:"none", cursor:"pointer", padding:0, fontFamily:"var(--font-sans)" }}>
               desvincular
             </button>
           </div>
         )}
-        <Field label="Descripción" value={form.caption||""} onChange={v => setForm(f => ({...f, caption:v}))} placeholder="Breve descripción de la imagen" />
+        <Field label="Descripción" value={form.caption||""} onChange={v => setForm(f => ({...f, caption:v}))} placeholder="Breve descripción" />
         <Field label="Etiquetas (separadas por coma)" value={form.tags||""} onChange={v => setForm(f => ({...f, tags:v}))} placeholder="Ej. exterior, daños, 2024" />
         <Field label="Fecha" type="date" value={form.dateAdded||""} onChange={v => setForm(f => ({...f, dateAdded:v}))} />
       </Modal>
