@@ -4,6 +4,7 @@ import { createToken, verifyToken } from './auth'
 import { getAppHtml } from './templates/app'
 import { getLoginHtml } from './templates/login'
 import { listFolderMedia, proxyThumbnail, proxyMedia } from './google-drive'
+import { getProviderCapabilities } from './providers'
 
 type Bindings = {
   DB: D1Database
@@ -139,6 +140,12 @@ async function saveData(c: any) {
 
 app.put('/api/data', requireAPI, saveData)
 app.post('/api/data', requireAPI, saveData)
+
+// ── Media providers (capability gate) ──────────────────────────────────────
+
+app.get('/api/providers', requireAPI, (c) => {
+  return c.json({ providers: getProviderCapabilities(c.env) })
+})
 
 // ── Google Drive proxy ─────────────────────────────────────────────────────
 
