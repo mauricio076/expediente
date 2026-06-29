@@ -101,7 +101,8 @@ if [[ -n "${JWT_SECRET:-}" ]]; then
   printf '%s' "$JWT_SECRET" | $WRANGLER secret put JWT_SECRET --env "$WORKER_ENV"
 fi
 
-echo "==> Deploying worker (--env $WORKER_ENV) -> $URL ..."
-$WRANGLER deploy --env "$WORKER_ENV"
+BUILD_ID="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)-$(date -u +%Y%m%d-%H%M)"
+echo "==> Deploying worker (--env $WORKER_ENV, build $BUILD_ID) -> $URL ..."
+$WRANGLER deploy --env "$WORKER_ENV" --var BUILD_ID:"$BUILD_ID"
 
 echo "==> Done. The worker is live at $URL"

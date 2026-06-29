@@ -1,4 +1,4 @@
-export function getAppHtml(): string {
+export function getAppHtml(buildId: string = 'dev'): string {
   return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -72,10 +72,14 @@ export function getAppHtml(): string {
     aside { transition: background 220ms cubic-bezier(0.22,1,0.36,1); }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     @keyframes fadein { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-    @media print { .sidebar-wrapper { display: none !important; } }
-    @media (max-width: 640px) {
-      .sidebar-wrapper { display: none !important; }
-      .sidebar-wrapper.open { display: flex !important; position: fixed !important; z-index: 50; }
+    button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
+      outline: 2px solid var(--terracotta-500); outline-offset: 2px; border-radius: var(--radius-sm);
+    }
+    .print-only { display: none; }
+    @media print {
+      @page { margin: 16mm; }
+      .app-shell { display: none !important; }
+      .print-only { display: block !important; }
     }
   </style>
 </head>
@@ -86,7 +90,23 @@ export function getAppHtml(): string {
   <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
   <script type="text/babel">
   // ── React hooks ─────────────────────────────────────────────────────────────
-  const { useState, useEffect, useLayoutEffect, useRef, useCallback } = React;
+  const { useState, useEffect, useLayoutEffect, useRef, useCallback, useId } = React;
+
+  // Build actualmente servido (inyectado por el worker en el deploy).
+  const BUILD_ID = ${JSON.stringify(buildId)};
+
+  // Media query reactiva (para el shell responsive).
+  const useMediaQuery = q => {
+    const [match, setMatch] = useState(false);
+    useEffect(() => {
+      const mq = window.matchMedia(q);
+      const on = () => setMatch(mq.matches);
+      on();
+      mq.addEventListener ? mq.addEventListener("change", on) : mq.addListener(on);
+      return () => { mq.removeEventListener ? mq.removeEventListener("change", on) : mq.removeListener(on); };
+    }, [q]);
+    return match;
+  };
 
   // ── Design tokens: event/doc/person types ───────────────────────────────────
   const COLORS = {
@@ -231,7 +251,7 @@ export function getAppHtml(): string {
       color = danger ? "#B04A3A" : "var(--fg-2)";
     }
     return (
-      <button type={type} onClick={onClick} disabled={disabled} title={title}
+      <button type={type} onClick={onClick} disabled={disabled} title={title} aria-label={title}
         onMouseEnter={() => setOver(true)}
         onMouseLeave={() => { setOver(false); setPress(false); }}
         onMouseDown={() => setPress(true)} onMouseUp={() => setPress(false)}
@@ -287,43 +307,135 @@ export function getAppHtml(): string {
     </div>
   );
 
+  // ── parseDateInput ──────────────────────────────────────────────────────────
+  // Normaliza texto libre a "YYYY-MM-DD". Devuelve "" para entrada vacia y null
+  // cuando no se puede parsear (para no romper el dato guardado).
+  const pad2 = n => (n < 10 ? "0" + n : "" + n);
+  const buildIso = (y, m, d) => {
+    if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+    if (y < 100) y = 2000 + y; // anos de dos digitos -> 20xx
+    if (y < 1 || y > 9999) return null;
+    return ("" + y).padStart(4, "0") + "-" + pad2(m) + "-" + pad2(d);
+  };
+  const parseDateInput = raw => {
+    if (raw == null) return "";
+    const s = ("" + raw).trim();
+    if (s === "") return "";
+    if (!/^[0-9]{1,4}([\/.\-][0-9]{1,4}){2}$/.test(s)) return null;
+    const groups = s.split(/[\/.\-]/);
+    const parts = groups.map(p => parseInt(p, 10));
+    if (parts.length !== 3 || parts.some(n => isNaN(n))) return null;
+    let y, m, d;
+    if (groups[0].length === 4) { y = parts[0]; m = parts[1]; d = parts[2]; }   // ano primero
+    else { d = parts[0]; m = parts[1]; y = parts[2]; }                          // dia primero (es-MX)
+    return buildIso(y, m, d);
+  };
+
+  // ── DateInput ───────────────────────────────────────────────────────────────
+  // Acepta escritura/pegado libre ademas del selector de calendario nativo.
+  // Siempre emite "YYYY-MM-DD" (o "") hacia onChange.
+  const DateInput = ({ id, value, onChange, ariaRequired }) => {
+    const [text, setText] = useState(value || "");
+    const dateRef = useRef(null);
+    const lastValid = useRef(value || "");
+
+    useEffect(() => {
+      const v = value || "";
+      lastValid.current = v;
+      setText(v);
+    }, [value]);
+
+    const commit = () => {
+      const parsed = parseDateInput(text);
+      if (parsed === "") {
+        lastValid.current = ""; setText("");
+        if ((value || "") !== "") onChange("");
+        return;
+      }
+      if (parsed == null) { setText(lastValid.current || ""); return; } // revierte
+      lastValid.current = parsed; setText(parsed);
+      if ((value || "") !== parsed) onChange(parsed);
+    };
+
+    const openPicker = () => {
+      const el = dateRef.current;
+      if (!el) return;
+      try { if (typeof el.showPicker === "function") { el.showPicker(); return; } } catch (e) {}
+      if (typeof el.focus === "function") el.focus();
+      if (typeof el.click === "function") el.click();
+    };
+
+    return (
+      <div style={{ position: "relative", display: "flex", alignItems: "stretch", width: "100%" }}>
+        <input id={id} type="text" inputMode="numeric" aria-required={ariaRequired}
+          value={text} placeholder="AAAA-MM-DD o DD/MM/AAAA"
+          onChange={e => setText(e.target.value)} onBlur={commit}
+          onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); commit(); } }}
+          style={{ width: "100%", boxSizing: "border-box", fontSize: 13, paddingRight: 36 }} />
+        <button type="button" onClick={openPicker} title="Abrir calendario" aria-label="Abrir calendario"
+          style={{ position: "absolute", right: 1, top: 1, bottom: 1, width: 32, display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "none", cursor: "pointer", color: "var(--fg-3)", padding: 0 }}>
+          <Icon name="calendar" size={15} />
+        </button>
+        <input ref={dateRef} type="date" tabIndex={-1} aria-hidden="true"
+          value={(value || "").length === 10 ? value : ""}
+          onChange={e => { const v = e.target.value || ""; lastValid.current = v; setText(v); if ((value || "") !== v) onChange(v); }}
+          style={{ position: "absolute", right: 1, top: 1, width: 32, height: 1, opacity: 0, pointerEvents: "none", border: "none", padding: 0 }} />
+      </div>
+    );
+  };
+
   // ── Field ───────────────────────────────────────────────────────────────────
-  const Field = ({ label, value, onChange, type = "text", as, rows = 3, options, required, placeholder }) => (
+  const Field = ({ label, value, onChange, type = "text", as, rows = 3, options, required, placeholder }) => {
+    const fid = useId();
+    return (
     <div style={{ marginBottom: 12 }}>
-      <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--fg-2)", marginBottom: 4 }}>
-        {label}{required && <span style={{ color: "#B04A3A", marginLeft: 2 }}>*</span>}
+      <label htmlFor={fid} style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--fg-2)", marginBottom: 4 }}>
+        {label}{required && <span style={{ color: "#B04A3A", marginLeft: 2 }} aria-hidden="true">*</span>}
       </label>
       {as === "textarea" ? (
-        <textarea value={value} onChange={e => onChange(e.target.value)} rows={rows} placeholder={placeholder}
+        <textarea id={fid} aria-required={required ? true : undefined} value={value} onChange={e => onChange(e.target.value)} rows={rows} placeholder={placeholder}
           style={{ width: "100%", boxSizing: "border-box", fontFamily: "var(--font-sans)", fontSize: 13 }} />
       ) : as === "select" ? (
-        <select value={value} onChange={e => onChange(e.target.value)} style={{ width: "100%", fontSize: 13 }}>
+        <select id={fid} aria-required={required ? true : undefined} value={value} onChange={e => onChange(e.target.value)} style={{ width: "100%", fontSize: 13 }}>
           {(options || []).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
+      ) : type === "date" ? (
+        <DateInput id={fid} value={value} onChange={onChange} ariaRequired={required ? true : undefined} />
       ) : (
-        <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+        <input id={fid} aria-required={required ? true : undefined} type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
           style={{ width: "100%", boxSizing: "border-box", fontSize: 13 }} />
       )}
     </div>
-  );
+    );
+  };
 
   // ── Modal ───────────────────────────────────────────────────────────────────
-  const Modal = ({ title, onClose, children, onSave, saveLabel = "Guardar" }) => (
+  const Modal = ({ title, onClose, children, onSave, saveLabel = "Guardar" }) => {
+    const dialogRef = useRef(null);
+    useEffect(() => {
+      const prev = document.activeElement;
+      if (dialogRef.current) dialogRef.current.focus();
+      const onKey = e => { if (e.key === "Escape") onClose(); };
+      window.addEventListener("keydown", onKey);
+      return () => { window.removeEventListener("keydown", onKey); if (prev && prev.focus) prev.focus(); };
+    }, []);
+    return (
     <div style={{
       position: "fixed", inset: 0, background: "rgba(28,43,43,0.48)",
       display: "flex", alignItems: "center", justifyContent: "center",
       zIndex: 900, padding: "1rem",
     }} onClick={onClose}>
-      <div onClick={e => e.stopPropagation()} style={{
+      <div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label={title}
+        onClick={e => e.stopPropagation()} style={{
         background: "#FFFFFF", border: "1px solid rgba(28,43,43,0.12)",
         borderRadius: "var(--radius-xl)", padding: "1.5rem",
         width: "min(520px,100%)", maxHeight: "88vh", overflowY: "auto",
         boxShadow: "0 20px 48px -16px rgba(28,43,43,0.30)",
-        animation: "fadein 180ms ease-out",
+        animation: "fadein 180ms ease-out", outline: "none",
       }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
           <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: "var(--fg-1)" }}>{title}</h3>
-          <Btn onClick={onClose} variant="ghost" style={{ padding: "4px 8px" }}><Icon name="x" size={14} /></Btn>
+          <Btn onClick={onClose} variant="ghost" title="Cerrar" style={{ padding: "4px 8px" }}><Icon name="x" size={14} /></Btn>
         </div>
         {children}
         {onSave && (
@@ -337,6 +449,58 @@ export function getAppHtml(): string {
         )}
       </div>
     </div>
+    );
+  };
+
+  // ── ConfirmDialog (confirmación de borrado) ──────────────────────────────────
+  const ConfirmDialog = ({ title, message, confirmLabel = "Eliminar", onConfirm, onClose }) => {
+    const ref = useRef(null);
+    useEffect(() => {
+      if (ref.current) ref.current.focus();
+      const onKey = e => { if (e.key === "Escape") onClose(); };
+      window.addEventListener("keydown", onKey);
+      return () => window.removeEventListener("keydown", onKey);
+    }, []);
+    return (
+      <div style={{ position:"fixed", inset:0, background:"rgba(28,43,43,0.52)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:"1rem" }} onClick={onClose}>
+        <div ref={ref} tabIndex={-1} role="alertdialog" aria-modal="true" aria-label={title}
+          onClick={e => e.stopPropagation()} style={{
+          background:"#FFFFFF", border:"1px solid rgba(28,43,43,0.12)", borderRadius:"var(--radius-xl)",
+          padding:"1.4rem", width:"min(400px,100%)", boxShadow:"0 20px 48px -16px rgba(28,43,43,0.30)",
+          animation:"fadein 160ms ease-out", outline:"none",
+        }}>
+          <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom:14 }}>
+            <span style={{ flexShrink:0, display:"inline-flex", alignItems:"center", justifyContent:"center", width:34, height:34, borderRadius:"50%", background:"#FCEBEB", color:"#B04A3A" }}>
+              <Icon name="alert-triangle" size={17} color="#B04A3A" />
+            </span>
+            <div>
+              <h3 style={{ margin:"0 0 4px", fontSize:15, fontWeight:600, color:"var(--fg-1)" }}>{title}</h3>
+              <p style={{ margin:0, fontSize:13, color:"var(--fg-2)", lineHeight:1.6 }}>{message}</p>
+            </div>
+          </div>
+          <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
+            <Btn onClick={onClose} variant="outline">Cancelar</Btn>
+            <Btn onClick={onConfirm} variant="primary" style={{ background:"#B04A3A", borderColor:"#9A3F30", color:"#FFFFFF" }}>{confirmLabel}</Btn>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ── Footer (info + build servido) ────────────────────────────────────────────
+  const Footer = () => (
+    <footer className="app-footer" style={{
+      flexShrink:0, borderTop:"1px solid rgba(28,43,43,0.10)", background:"var(--card-bg)",
+      padding:"7px 20px", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap",
+      fontSize:11, color:"var(--fg-3)", transition:"background 220ms ease",
+    }}>
+      <span style={{ fontFamily:"var(--font-lockup)", fontWeight:700, letterSpacing:"0.16em", textTransform:"uppercase" }}>Expediente</span>
+      <span>· Uso personal y privado</span>
+      <span style={{ marginLeft:"auto", display:"inline-flex", alignItems:"center", gap:5 }} title="Build actualmente servido">
+        <Icon name="git-commit-horizontal" size={11} />
+        <span style={{ fontFamily:"var(--font-mono)" }}>build {BUILD_ID}</span>
+      </span>
+    </footer>
   );
 
   // ── SearchBar ───────────────────────────────────────────────────────────────
@@ -1131,7 +1295,7 @@ export function getAppHtml(): string {
   ];
 
   // ── Sidebar ─────────────────────────────────────────────────────────────────
-  const Sidebar = ({ activeTab, onTab, caseInfo, pendingCount, nextDate }) => {
+  const Sidebar = ({ activeTab, onTab, caseInfo, pendingCount, nextDate, style = {} }) => {
     const statusColors = {
       "En proceso": { bg:"#FAEEDA", text:"#633806", border:"#BA7517" },
       "En pausa":   { bg:"#FCEBEB", text:"#791F1F", border:"#E24B4A" },
@@ -1140,12 +1304,13 @@ export function getAppHtml(): string {
     };
     const sc = statusColors[caseInfo.status] || statusColors["En proceso"];
     return (
-      <aside style={{
+      <aside className="app-sidebar" style={{
         width: 224, flexShrink: 0, background: "var(--sidebar-bg)",
         borderRight: "1px solid var(--sidebar-border)",
         display: "flex", flexDirection: "column",
         height: "100vh", overflow: "hidden",
         transition: "background 220ms cubic-bezier(0.22,1,0.36,1)",
+        ...style,
       }}>
         <div style={{ padding:"20px 16px 16px", borderBottom:"1px solid var(--sidebar-border)" }}>
           <div style={{ fontFamily:"var(--font-lockup)", fontWeight:700, fontSize:10, letterSpacing:"0.20em", textTransform:"uppercase", color:"var(--sidebar-accent)", marginBottom:8 }}>
@@ -1341,16 +1506,20 @@ export function getAppHtml(): string {
       </Modal>
     );
   };
-  const PhotoModal = ({ form, setForm, onSave, onClose }) => {
+  const PhotoModal = ({ form, setForm, onSave, onClose, onBulkImport }) => {
     const [providers, setProviders] = useState(MEDIA_PROVIDERS);
     const [providerId, setProviderId] = useState("google_drive");
     const [folderUrl, setFolderUrl] = useState("");
-    const [linkUrl, setLinkUrl]     = useState("");
-    const [linkKind, setLinkKind]   = useState("video");
     const [files, setFiles]         = useState(null);
     const [loading, setLoading]     = useState(false);
     const [error, setError]         = useState("");
+    const [selected, setSelected]   = useState({});
+    const [linkUrl, setLinkUrl]     = useState("");
+    const [linkKind, setLinkKind]   = useState("video");
+    const [linkLoading, setLinkLoading] = useState(false);
+    const [linkError, setLinkError] = useState("");
 
+    const today = new Date().toISOString().slice(0, 10);
     const provider = providers.find(p => p.id === providerId) || providers[0];
 
     // Gate: el backend puede reportar que un proveedor ya admite explorar carpetas
@@ -1367,12 +1536,47 @@ export function getAppHtml(): string {
       return () => { alive = false; };
     }, []);
 
-    const switchProvider = id => { setProviderId(id); setFiles(null); setError(""); setFolderUrl(""); };
+    const switchProvider = id => { setProviderId(id); setFiles(null); setError(""); setFolderUrl(""); setSelected({}); };
+
+    const kindOfMime = m => (m||"").toLowerCase().startsWith("video/") ? "video" : "image";
+    const baseName = n => { const s = n || ""; const dot = s.lastIndexOf("."); return dot > 0 ? s.slice(0, dot) : s; };
+    const newId = i => "ph" + Date.now() + "-" + (i||0) + "-" + Math.random().toString(36).slice(2, 7);
+    // Solo conserva la racha inicial de caracteres válidos de id de Drive (sin regex con barras).
+    const cleanId = s => {
+      let out = "";
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if ((ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") || (ch >= "0" && ch <= "9") || ch === "_" || ch === "-") out += ch;
+        else break;
+      }
+      return out;
+    };
+    const extractDriveFileId = url => {
+      const u = url || "";
+      const marker = "/file/d/";
+      let idx = u.indexOf(marker);
+      if (idx >= 0) { const id = cleanId(u.slice(idx + marker.length)); if (id) return id; }
+      idx = u.indexOf("id=");
+      if (idx >= 0) { const id = cleanId(u.slice(idx + 3)); if (id) return id; }
+      return null;
+    };
+    const sourceForUrl = u => {
+      try { const h = new URL(u).hostname;
+        if (h.indexOf("dropbox.com") >= 0) return "dropbox";
+        if (h.indexOf("1drv.ms") >= 0 || h.indexOf("onedrive") >= 0 || h.indexOf("sharepoint") >= 0) return "onedrive";
+      } catch (e) {}
+      return "url";
+    };
+    const driveItem = (file, i) => ({
+      id: newId(i), name: baseName(file.name), source: "google_drive",
+      driveFileId: file.id, mimeType: file.mimeType || "", kind: kindOfMime(file.mimeType),
+      url: file.webViewLink || "", caption: "", tags: [], dateAdded: today,
+    });
 
     const loadFolder = async () => {
       const folderId = provider.parseFolder ? provider.parseFolder(folderUrl) : null;
       if (!folderId) { setError("Enlace de carpeta inválido para " + provider.label + "."); return; }
-      setLoading(true); setError("");
+      setLoading(true); setError(""); setSelected({});
       try {
         const r = await fetch(provider.folderApi + folderId);
         const data = await r.json();
@@ -1385,36 +1589,59 @@ export function getAppHtml(): string {
       }
     };
 
+    const toggleSelect = id => setSelected(s => { const n = { ...s }; if (n[id]) delete n[id]; else n[id] = true; return n; });
+    const selectAll = () => { const n = {}; (files||[]).forEach(f => { n[f.id] = true; }); setSelected(n); };
+    const clearSelection = () => setSelected({});
+    const selCount = Object.keys(selected).length;
+    const importFiles = list => { if (!list.length) return; onBulkImport(list.map((f, i) => driveItem(f, i))); };
+    const importSelected = () => { const chosen = (files||[]).filter(f => selected[f.id]); importFiles(chosen.length ? chosen : (files||[])); };
+
+    // Edición rápida: cargar UN archivo en el formulario (doble clic).
     const pickFile = file => {
-      const vid = (file.mimeType||"").toLowerCase().startsWith('video/');
       setForm(f => ({
         ...f,
-        name:        f.name || file.name.replace(/\.[^.]+$/, ""),
-        source:      provider.id,
+        name:        f.name || baseName(file.name),
+        source:      "google_drive",
         url:         file.webViewLink || "",
         driveFileId: file.id,
         mimeType:    file.mimeType || "",
-        kind:        vid ? 'video' : 'image',
+        kind:        kindOfMime(file.mimeType),
       }));
-      setFiles(null);
-      setFolderUrl("");
+      setFiles(null); setFolderUrl(""); setSelected({});
     };
 
-    const addLink = () => {
-      const u = linkUrl.trim();
-      if (!u) return;
-      const kind = isDirectVideoUrl(u) ? 'video' : (isDirectImageUrl(u) ? 'image' : linkKind);
-      setForm(f => ({
-        ...f,
-        name:        f.name || (decodeURIComponent(u.split('?')[0].split('/').pop() || "").replace(/\.[^.]+$/, "") || provider.label),
-        source:      provider.id,
-        url:         u,
-        kind,
-        driveFileId: "",
-        mimeType:    "",
-      }));
-      setLinkUrl("");
+    // Agregar UN archivo desde un enlace pegado (archivo de Drive, o URL directa/Dropbox/OneDrive).
+    const addSingleLink = async () => {
+      const raw = (linkUrl || "").trim();
+      if (!raw) return;
+      setLinkError(""); setLinkLoading(true);
+      try {
+        if (raw.indexOf("drive.google.com") >= 0 || raw.indexOf("docs.google.com") >= 0) {
+          const fileId = extractDriveFileId(raw);
+          if (!fileId) throw new Error("No se pudo extraer el ID del archivo de Drive.");
+          const r = await fetch("/api/drive/file/" + fileId);
+          const meta = await r.json();
+          if (!r.ok) throw new Error(meta.error || "HTTP " + r.status);
+          onBulkImport([ driveItem({ id: meta.id, name: meta.name, mimeType: meta.mimeType, webViewLink: meta.webViewLink }, 0) ]);
+        } else {
+          const kind = isDirectVideoUrl(raw) ? "video" : (isDirectImageUrl(raw) ? "image" : linkKind);
+          const nm = baseName(decodeURIComponent(raw.split('?')[0].split('#')[0].split('/').pop() || "")) || "Archivo";
+          onBulkImport([{ id: newId(0), name: nm, source: sourceForUrl(raw), url: raw, mimeType: "", kind, caption: "", tags: [], dateAdded: today }]);
+        }
+        setLinkUrl("");
+      } catch(e) {
+        setLinkError("Error: " + e.message);
+      } finally {
+        setLinkLoading(false);
+      }
     };
+
+    const thumbBtnStyle = on => ({
+      position:"relative", padding:0,
+      border: on ? "2px solid #D27653" : "2px solid transparent",
+      borderRadius:"var(--radius-sm)", background:"rgba(28,43,43,0.06)", cursor:"pointer",
+      overflow:"hidden", aspectRatio:"1", display:"flex", alignItems:"center", justifyContent:"center",
+    });
 
     return (
       <Modal title={form.id ? "Editar foto o video" : "Nueva foto o video"} onClose={onClose} onSave={onSave}>
@@ -1456,49 +1683,88 @@ export function getAppHtml(): string {
                 <div style={{ fontSize:11, color:"var(--fg-3)", marginTop:6 }}>Sin fotos ni videos en esta carpeta.</div>
               )}
               {files && files.length > 0 && (
-                <div style={{ marginTop:8, display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:5, maxHeight:180, overflowY:"auto" }}>
-                  {files.map(file => {
-                    const vid = (file.mimeType||"").toLowerCase().startsWith('video/');
-                    return (
-                    <button key={file.id} type="button" onClick={() => pickFile(file)} title={file.name}
-                      style={{ padding:0, border:"2px solid transparent", borderRadius:"var(--radius-sm)", background:"rgba(28,43,43,0.06)", cursor:"pointer", overflow:"hidden", aspectRatio:"1", display:"flex", alignItems:"center", justifyContent:"center", position:"relative" }}
-                      onMouseEnter={e => e.currentTarget.style.borderColor = "#D27653"}
-                      onMouseLeave={e => e.currentTarget.style.borderColor = "transparent"}>
-                      <img src={"/api/drive/thumb/" + file.id} alt={file.name}
-                        style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
-                      {vid && (
-                        <span style={{ position:"absolute", display:"inline-flex", alignItems:"center", justifyContent:"center", width:24, height:24, borderRadius:"50%", background:"rgba(28,43,43,0.55)", pointerEvents:"none" }}>
-                          <Icon name="play" size={12} color="#FFFFFF" />
-                        </span>
-                      )}
+                <div style={{ marginTop:8 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:6 }}>
+                    <span style={{ fontSize:11, color:"var(--fg-3)" }}>
+                      {selCount > 0 ? (selCount + " de " + files.length + " seleccionados") : (files.length + " archivos · toca para seleccionar")}
+                    </span>
+                    <button type="button" onClick={selectAll}
+                      style={{ fontSize:11, color:"var(--fg-2)", background:"none", border:"none", cursor:"pointer", padding:0, fontFamily:"var(--font-sans)", textDecoration:"underline" }}>
+                      Seleccionar todos
                     </button>
-                    );
-                  })}
+                    {selCount > 0 && (
+                      <button type="button" onClick={clearSelection}
+                        style={{ fontSize:11, color:"#B04A3A", background:"none", border:"none", cursor:"pointer", padding:0, fontFamily:"var(--font-sans)", textDecoration:"underline" }}>
+                        Quitar selección
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:5, maxHeight:180, overflowY:"auto" }}>
+                    {files.map(file => {
+                      const on = !!selected[file.id];
+                      const vid = kindOfMime(file.mimeType) === "video";
+                      return (
+                        <button key={file.id} type="button" onClick={() => toggleSelect(file.id)}
+                          onDoubleClick={() => pickFile(file)} title={file.name} style={thumbBtnStyle(on)}>
+                          <img src={"/api/drive/thumb/" + file.id} alt={file.name}
+                            style={{ width:"100%", height:"100%", objectFit:"cover", display:"block", opacity: on ? 0.65 : 1 }} />
+                          {vid && (
+                            <span style={{ position:"absolute", left:3, bottom:3, display:"inline-flex", alignItems:"center", justifyContent:"center", width:16, height:16, borderRadius:8, background:"rgba(0,0,0,0.55)" }}>
+                              <Icon name="play" size={9} color="#FFFFFF" />
+                            </span>
+                          )}
+                          {on && (
+                            <span style={{ position:"absolute", top:3, right:3, display:"inline-flex", alignItems:"center", justifyContent:"center", width:18, height:18, borderRadius:9, background:"#D27653" }}>
+                              <Icon name="check" size={11} color="#FFFFFF" />
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div style={{ display:"flex", gap:8, marginTop:8 }}>
+                    <Btn onClick={importSelected} variant="primary">
+                      <Icon name="download" size={13} />
+                      {selCount > 0 ? ("Importar " + selCount) : ("Importar todos (" + files.length + ")")}
+                    </Btn>
+                  </div>
+                  <div style={{ fontSize:10, color:"var(--fg-3)", marginTop:5 }}>
+                    Doble clic en una miniatura para editarla en el formulario antes de guardar.
+                  </div>
                 </div>
               )}
             </div>
           ) : (
-            <div>
-              <div style={{ fontSize:11, color:"var(--fg-3)", marginBottom:6 }}>
-                Pega el enlace compartido del archivo en {provider.label} y se mostrará aquí. (La exploración de carpetas por API llegará en una próxima versión.)
-              </div>
-              <div style={{ display:"flex", gap:6 }}>
-                <input type="url" value={linkUrl} onChange={e => setLinkUrl(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && addLink()}
-                  placeholder={provider.linkHint}
-                  style={{ flex:1, fontSize:12, padding:"6px 8px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.18)", background:"var(--input-bg)", color:"var(--fg-1)", fontFamily:"var(--font-sans)" }} />
-                <select value={linkKind} onChange={e => setLinkKind(e.target.value)}
-                  style={{ fontSize:12, padding:"6px 8px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.18)", background:"var(--input-bg)", color:"var(--fg-2)", cursor:"pointer", flexShrink:0, fontFamily:"var(--font-sans)" }}>
-                  <option value="video">Video</option>
-                  <option value="image">Foto</option>
-                </select>
-                <button type="button" onClick={addLink} disabled={!linkUrl.trim()}
-                  style={{ fontSize:12, padding:"6px 12px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.18)", background:"var(--input-bg)", color:"var(--fg-2)", cursor:"pointer", flexShrink:0, fontFamily:"var(--font-sans)" }}>
-                  Agregar
-                </button>
-              </div>
+            <div style={{ fontSize:11, color:"var(--fg-3)" }}>
+              La exploración de carpetas de {provider.label} llegará en una próxima versión. Mientras tanto, usa «Enlace de un archivo» (abajo) para agregar un archivo de {provider.label} o cualquier enlace directo.
             </div>
           )}
+        </div>
+        {/* Enlace de un archivo individual (cualquier fuente) */}
+        <div style={{ background:"rgba(28,43,43,0.04)", borderRadius:"var(--radius-md)", padding:"10px 12px", marginBottom:14 }}>
+          <div style={{ fontSize:11, fontWeight:600, color:"var(--fg-3)", marginBottom:6, textTransform:"uppercase", letterSpacing:"0.07em" }}>
+            Enlace de un archivo
+          </div>
+          <div style={{ display:"flex", gap:6 }}>
+            <input type="url" value={linkUrl} onChange={e => setLinkUrl(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && addSingleLink()}
+              placeholder="Enlace de Drive (/file/d/…), Dropbox, OneDrive o .mp4/.jpg directo"
+              style={{ flex:1, fontSize:12, padding:"6px 8px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.18)", background:"var(--input-bg)", color:"var(--fg-1)", fontFamily:"var(--font-sans)" }} />
+            <button type="button" onClick={addSingleLink} disabled={linkLoading || !linkUrl.trim()}
+              style={{ fontSize:12, padding:"6px 12px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.18)", background:"var(--input-bg)", color:"var(--fg-2)", cursor:"pointer", flexShrink:0, fontFamily:"var(--font-sans)" }}>
+              {linkLoading ? "…" : "Agregar"}
+            </button>
+          </div>
+          <div style={{ display:"flex", gap:10, marginTop:6, fontSize:11, color:"var(--fg-3)", alignItems:"center", flexWrap:"wrap" }}>
+            <span>Si es ambiguo, tratar como:</span>
+            <label style={{ display:"inline-flex", alignItems:"center", gap:4, cursor:"pointer" }}>
+              <input type="radio" name="linkKind" checked={linkKind==="image"} onChange={() => setLinkKind("image")} /> Foto
+            </label>
+            <label style={{ display:"inline-flex", alignItems:"center", gap:4, cursor:"pointer" }}>
+              <input type="radio" name="linkKind" checked={linkKind==="video"} onChange={() => setLinkKind("video")} /> Video
+            </label>
+          </div>
+          {linkError && <div style={{ fontSize:11, color:"#B04A3A", marginTop:5 }}>{linkError}</div>}
         </div>
         {/* Manual fields */}
         <Field label="Nombre" value={form.name||""} onChange={v => setForm(f => ({...f, name:v}))} required placeholder="Ej. Fachada del inmueble" />
@@ -1629,6 +1895,152 @@ export function getAppHtml(): string {
     );
   };
 
+  // ── PrintReport (versión imprimible / PDF del expediente) ────────────────────
+  const PrintReport = ({ data }) => {
+    const ci = data.caseInfo || {};
+    const docName = id => { const d = (data.documents||[]).find(x => x.id === id); return d ? d.name : null; };
+    const phName  = id => { const p = (data.photos||[]).find(x => x.id === id); return p ? p.name : null; };
+    const attachLine = item => {
+      const names = [
+        ...(item.attachedDocs || []).map(docName),
+        ...(item.attachedPhotos || []).map(phName),
+      ].filter(Boolean);
+      return names.length ? names.join(" · ") : null;
+    };
+    const labelOf = (arr, id, key) => { const x = arr.find(e => e.id === id); return x ? x[key || 'label'] : id; };
+
+    const H = ({ children }) => (
+      <h2 style={{ fontFamily:"var(--font-display)", fontSize:15, fontWeight:600, color:"#1C2B2B",
+        margin:"18px 0 8px", paddingBottom:4, borderBottom:"1px solid #1C2B2B", breakAfter:"avoid" }}>{children}</h2>
+    );
+    const Item = ({ children }) => (
+      <div style={{ margin:"0 0 9px", breakInside:"avoid", pageBreakInside:"avoid" }}>{children}</div>
+    );
+    const meta = txt => <div style={{ fontSize:10.5, color:"#6E7676", fontFamily:"var(--font-mono)" }}>{txt}</div>;
+
+    const events  = data.events || [];
+    const dates   = data.upcomingDates || [];
+    const pend    = data.pendingRequests || [];
+    const docs    = data.documents || [];
+    const photos  = data.photos || [];
+    const notes   = data.notes || [];
+    const people  = data.people || [];
+    const related = data.relatedCases || [];
+
+    return (
+      <div style={{ fontFamily:"var(--font-sans)", color:"#2A3A3A", fontSize:12, lineHeight:1.55, background:"#FFFFFF", padding:"4px 2px" }}>
+        {/* Header */}
+        <div style={{ marginBottom:14 }}>
+          <div style={{ fontFamily:"var(--font-lockup)", fontWeight:700, fontSize:10, letterSpacing:"0.2em", textTransform:"uppercase", color:"#A85638" }}>Expediente</div>
+          <h1 style={{ fontFamily:"var(--font-display)", fontSize:24, fontWeight:600, color:"#1C2B2B", margin:"4px 0 6px", letterSpacing:"-0.01em" }}>{ci.title || "Mi caso"}</h1>
+          <div style={{ fontSize:11.5, color:"#4A5656", display:"flex", flexWrap:"wrap", gap:"2px 14px", flexDirection:"column" }}>
+            {ci.folderNo && <span><b>Folio:</b> {ci.folderNo}</span>}
+            {ci.status && <span><b>Estado:</b> {ci.status}</span>}
+            {ci.court && <span><b>Juzgado:</b> {ci.court}</span>}
+            {ci.opponent && <span><b>Contraparte:</b> {ci.opponent}</span>}
+          </div>
+        </div>
+
+        {ci.notes && (<><H>Descripción del caso</H><p style={{ margin:0, whiteSpace:"pre-wrap" }}>{ci.notes}</p></>)}
+
+        {events.length > 0 && (
+          <><H>Timeline ({events.length})</H>
+          {events.map(ev => { const att = attachLine(ev); return (
+            <Item key={ev.id}>
+              {meta(ev.date + "  ·  " + labelOf(EVENT_TYPES, ev.type))}
+              <div style={{ fontWeight:600, color:"#1C2B2B" }}>{ev.title}</div>
+              {ev.description && <div>{ev.description}</div>}
+              {att && <div style={{ fontSize:11, color:"#6E7676" }}>Adjuntos: {att}</div>}
+            </Item>
+          ); })}</>
+        )}
+
+        {dates.length > 0 && (
+          <><H>Próximas fechas ({dates.length})</H>
+          {dates.map(d => (
+            <Item key={d.id}>
+              {meta(d.date)}
+              <div style={{ fontWeight:600, color:"#1C2B2B" }}>{d.title}</div>
+              {d.location && <div>{d.location}</div>}
+              {d.notes && <div>{d.notes}</div>}
+            </Item>
+          ))}</>
+        )}
+
+        {pend.length > 0 && (
+          <><H>Pendientes ({pend.length})</H>
+          {pend.map(p => (
+            <Item key={p.id}>
+              <div><span style={{ fontFamily:"var(--font-mono)" }}>{p.done ? "[x]" : "[ ]"}</span> <b>{p.description}</b></div>
+              {(p.requestedBy || p.date) && meta([p.requestedBy, p.date].filter(Boolean).join("  ·  "))}
+            </Item>
+          ))}</>
+        )}
+
+        {docs.length > 0 && (
+          <><H>Documentos ({docs.length})</H>
+          {docs.map(d => (
+            <Item key={d.id}>
+              <div style={{ fontWeight:600, color:"#1C2B2B" }}>{d.name}</div>
+              {meta([labelOf(DOC_TYPES, d.type), d.dateAdded].filter(Boolean).join("  ·  "))}
+              {d.url && <div style={{ fontSize:10.5, color:"#4A6E78", wordBreak:"break-all" }}>{d.url}</div>}
+            </Item>
+          ))}</>
+        )}
+
+        {photos.length > 0 && (
+          <><H>Fotos y videos ({photos.length})</H>
+          {photos.map(p => (
+            <Item key={p.id}>
+              <div style={{ fontWeight:600, color:"#1C2B2B" }}>{p.name}{(p.kind === 'video' || (p.mimeType||'').startsWith('video/')) ? "  (video)" : ""}</div>
+              {meta([labelOf(PHOTO_SOURCES, p.source), p.dateAdded].filter(Boolean).join("  ·  "))}
+              {p.caption && <div>{p.caption}</div>}
+              {p.url && <div style={{ fontSize:10.5, color:"#4A6E78", wordBreak:"break-all" }}>{p.url}</div>}
+            </Item>
+          ))}</>
+        )}
+
+        {notes.length > 0 && (
+          <><H>Notas y testimonios ({notes.length})</H>
+          {notes.map(n => { const att = attachLine(n); return (
+            <Item key={n.id}>
+              <div style={{ fontWeight:600, color:"#1C2B2B" }}>{n.title}</div>
+              {(n.date || n.author) && meta([n.date, n.author].filter(Boolean).join("  ·  "))}
+              {n.content && <div style={{ whiteSpace:"pre-wrap" }}>{n.content}</div>}
+              {att && <div style={{ fontSize:11, color:"#6E7676" }}>Adjuntos: {att}</div>}
+            </Item>
+          ); })}</>
+        )}
+
+        {people.length > 0 && (
+          <><H>Personas clave ({people.length})</H>
+          {people.map(p => (
+            <Item key={p.id}>
+              <div style={{ fontWeight:600, color:"#1C2B2B" }}>{p.name} <span style={{ fontWeight:400, color:"#6E7676" }}>— {labelOf(PERSON_ROLES, p.role)}</span></div>
+              {(p.phone || p.email) && meta([p.phone, p.email].filter(Boolean).join("  ·  "))}
+              {p.notes && <div>{p.notes}</div>}
+            </Item>
+          ))}</>
+        )}
+
+        {related.length > 0 && (
+          <><H>Casos relacionados ({related.length})</H>
+          {related.map(r => (
+            <Item key={r.id}>
+              <div style={{ fontWeight:600, color:"#1C2B2B" }}>{r.number} <span style={{ fontWeight:400, color:"#6E7676" }}>— {labelOf(RELATED_TYPES, r.type)}</span></div>
+              {(r.authority || r.status) && meta([r.authority, r.status].filter(Boolean).join("  ·  "))}
+              {r.description && <div>{r.description}</div>}
+            </Item>
+          ))}</>
+        )}
+
+        <div style={{ marginTop:22, paddingTop:8, borderTop:"1px solid #C9C6BE", fontSize:10, color:"#8E9494", fontFamily:"var(--font-mono)" }}>
+          Expediente · documento generado para uso personal y privado · build {BUILD_ID}
+        </div>
+      </div>
+    );
+  };
+
   // ── App ─────────────────────────────────────────────────────────────────────
   function App() {
     const [data,       setData]       = useState(null);
@@ -1640,8 +2052,19 @@ export function getAppHtml(): string {
     const [showSearch, setShowSearch] = useState(false);
     const [theme,      setTheme]      = useState("papel");
     const [saveStatus, setSaveStatus] = useState("saved");
+    const [navOpen,    setNavOpen]    = useState(false);
+    const [confirm,    setConfirm]    = useState(null);
     const saveTimer   = useRef(null);
     const pendingData = useRef(null);
+    const isNarrow = useMediaQuery("(max-width: 760px)");
+
+    // Pide confirmación antes de un borrado irreversible.
+    const askDelete = (label, fn) => setConfirm({
+      title: "Eliminar " + label,
+      message: "Esta acción no se puede deshacer. ¿Eliminar de forma permanente?",
+      confirmLabel: "Eliminar",
+      onConfirm: fn,
+    });
 
     // Load data from API on mount
     useEffect(() => {
@@ -1709,6 +2132,13 @@ export function getAppHtml(): string {
     }, [doSave]);
 
     const closeModal = useCallback(() => { setModal(null); setForm({}); }, []);
+
+    // Importación en lote de fotos/videos (carpeta completa o varios seleccionados).
+    const bulkAddPhotos = items => {
+      if (!items || !items.length) { closeModal(); return; }
+      upd({ ...data, photos: [ ...(data.photos||[]), ...items ] });
+      closeModal();
+    };
 
     if (loading) return <LoadingState />;
     if (loadError) return <ErrorState message={loadError} />;
@@ -1838,12 +2268,30 @@ export function getAppHtml(): string {
       fetch("/logout", { method:"POST" }).finally(() => { window.location.href = "/login"; });
     };
 
+    const goTab = id => { setTab(id); setNavOpen(false); };
+    const drawerStyle = isNarrow ? {
+      position:"fixed", top:0, left:0, zIndex:61,
+      transform: navOpen ? "translateX(0)" : "translateX(-100%)",
+      transition:"transform 240ms cubic-bezier(0.22,1,0.36,1)",
+      boxShadow: navOpen ? "0 12px 40px -8px rgba(28,43,43,0.35)" : "none",
+    } : {};
+
     return (
-      <div style={{ display:"flex", height:"100vh", overflow:"hidden", ...themeVars }}>
-        <Sidebar activeTab={tab} onTab={setTab} caseInfo={data.caseInfo} pendingCount={pendingCount} nextDate={nextDate} />
+      <React.Fragment>
+      <div className="app-shell" style={{ display:"flex", height:"100vh", overflow:"hidden", ...themeVars }}>
+        {isNarrow && navOpen && (
+          <div className="app-backdrop" onClick={() => setNavOpen(false)}
+            style={{ position:"fixed", inset:0, background:"rgba(28,43,43,0.45)", zIndex:60 }} />
+        )}
+        <Sidebar activeTab={tab} onTab={goTab} caseInfo={data.caseInfo} pendingCount={pendingCount} nextDate={nextDate} style={drawerStyle} />
         <div style={{ flex:1, display:"flex", flexDirection:"column", minWidth:0, background:"var(--content-bg)", transition:"background 220ms ease" }}>
           {/* Top bar */}
-          <div style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 20px", borderBottom:"1px solid rgba(28,43,43,0.10)", background:"var(--card-bg)", flexShrink:0, transition:"background 220ms ease" }}>
+          <div className="app-topbar" style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 20px", borderBottom:"1px solid rgba(28,43,43,0.10)", background:"var(--card-bg)", flexShrink:0, transition:"background 220ms ease" }}>
+            {isNarrow && (
+              <Btn onClick={() => setNavOpen(true)} variant="ghost" title="Abrir menú" style={{ padding:"7px 9px", flexShrink:0 }}>
+                <Icon name="menu" size={16} />
+              </Btn>
+            )}
             <button onClick={() => setShowSearch(true)} style={{ flex:1, display:"flex", alignItems:"center", gap:8, padding:"7px 12px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.14)", background:"rgba(28,43,43,0.03)", color:"var(--fg-3)", cursor:"text", textAlign:"left", fontFamily:"var(--font-sans)", fontSize:13, maxWidth:480 }}>
               <Icon name="search" size={14} />
               <span>Buscar en el expediente…</span>
@@ -1853,30 +2301,36 @@ export function getAppHtml(): string {
             <Btn onClick={() => { const idx = themeOrder.indexOf(theme); setTheme(themeOrder[(idx+1) % themeOrder.length]); }} variant="ghost" title={"Tema: " + theme} style={{ padding:"7px 10px", flexShrink:0 }}>
               <Icon name="palette" size={14} />
             </Btn>
-            <Btn onClick={exportJSON} variant="ghost" title="Exportar JSON" style={{ padding:"7px 10px", flexShrink:0 }}>
-              <Icon name="download" size={14} />
+            <Btn onClick={() => window.print()} variant="ghost" title="Imprimir / Guardar PDF" style={{ padding:"7px 10px", flexShrink:0 }}>
+              <Icon name="printer" size={14} />
             </Btn>
+            {!isNarrow && (
+              <Btn onClick={exportJSON} variant="ghost" title="Exportar JSON" style={{ padding:"7px 10px", flexShrink:0 }}>
+                <Icon name="download" size={14} />
+              </Btn>
+            )}
             <Btn onClick={logout} variant="ghost" title="Cerrar sesión" style={{ padding:"7px 10px", flexShrink:0 }}>
               <Icon name="log-out" size={14} />
             </Btn>
           </div>
           {/* Content */}
-          <div style={{ flex:1, overflowY:"auto", padding:"24px 28px" }}>
+          <div className="app-content" style={{ flex:1, overflowY:"auto", padding: isNarrow ? "16px 14px" : "24px 28px" }}>
             {tab==="summary"  && <ResumenView     data={data} onEditCase={() => openAdd("case")} onGoTo={setTab} />}
-            {tab==="pending"  && <PendientesView  data={data} onToggle={togglePending} onAdd={() => openAdd("pending")} onEdit={p => openEdit("pending",p)} onDelete={del.pending} />}
-            {tab==="dates"    && <FechasView      data={data} onAdd={() => openAdd("date")}    onEdit={d => openEdit("date",d)}    onDelete={del.date}    />}
-            {tab==="timeline" && <TimelineView    data={data} onAdd={() => openAdd("event")}   onEdit={e => openEdit("event",e)}   onDelete={del.event}   onToggleAttachment={toggleAttachment} />}
-            {tab==="docs"     && <DocumentosView  data={data} onAdd={() => openAdd("doc")}     onEdit={d => openEdit("doc",d)}     onDelete={deleteDoc}   />}
-            {tab==="photos"   && <FotosView       data={data} onAdd={() => openAdd("photo")}   onEdit={p => openEdit("photo",p)}   onDelete={del.photo}   />}
-            {tab==="people"   && <PersonasView    data={data} onAdd={() => openAdd("person")}  onEdit={p => openEdit("person",p)}  onDelete={del.person}  />}
-            {tab==="notes"    && <NotasView       data={data} onAdd={() => openAdd("note")}    onEdit={n => openEdit("note",n)}    onDelete={del.note}    onToggleAttachment={toggleAttachment} />}
-            {tab==="related"  && <RelacionadosView data={data} onAdd={() => openAdd("related")} onEdit={r => openEdit("related",r)} onDelete={del.related} />}
+            {tab==="pending"  && <PendientesView  data={data} onToggle={togglePending} onAdd={() => openAdd("pending")} onEdit={p => openEdit("pending",p)} onDelete={id => askDelete("pendiente", () => del.pending(id))} />}
+            {tab==="dates"    && <FechasView      data={data} onAdd={() => openAdd("date")}    onEdit={d => openEdit("date",d)}    onDelete={id => askDelete("fecha", () => del.date(id))} />}
+            {tab==="timeline" && <TimelineView    data={data} onAdd={() => openAdd("event")}   onEdit={e => openEdit("event",e)}   onDelete={id => askDelete("evento", () => del.event(id))}   onToggleAttachment={toggleAttachment} />}
+            {tab==="docs"     && <DocumentosView  data={data} onAdd={() => openAdd("doc")}     onEdit={d => openEdit("doc",d)}     onDelete={id => askDelete("documento", () => deleteDoc(id))} />}
+            {tab==="photos"   && <FotosView       data={data} onAdd={() => openAdd("photo")}   onEdit={p => openEdit("photo",p)}   onDelete={id => askDelete("foto o video", () => del.photo(id))} />}
+            {tab==="people"   && <PersonasView    data={data} onAdd={() => openAdd("person")}  onEdit={p => openEdit("person",p)}  onDelete={id => askDelete("persona", () => del.person(id))} />}
+            {tab==="notes"    && <NotasView       data={data} onAdd={() => openAdd("note")}    onEdit={n => openEdit("note",n)}    onDelete={id => askDelete("nota", () => del.note(id))}    onToggleAttachment={toggleAttachment} />}
+            {tab==="related"  && <RelacionadosView data={data} onAdd={() => openAdd("related")} onEdit={r => openEdit("related",r)} onDelete={id => askDelete("caso relacionado", () => del.related(id))} />}
           </div>
+          <Footer />
         </div>
 
         {modal==="event"   && <EventModal   form={form} setForm={setForm} onSave={save.event}   onClose={closeModal} />}
         {modal==="doc"     && <DocModal     form={form} setForm={setForm} onSave={save.doc}     onClose={closeModal} />}
-        {modal==="photo"   && <PhotoModal   form={form} setForm={setForm} onSave={save.photo}   onClose={closeModal} />}
+        {modal==="photo"   && <PhotoModal   form={form} setForm={setForm} onSave={save.photo}   onClose={closeModal} onBulkImport={bulkAddPhotos} />}
         {modal==="note"    && <NoteModal    form={form} setForm={setForm} onSave={save.note}    onClose={closeModal} />}
         {modal==="pending" && <PendingModal form={form} setForm={setForm} onSave={save.pending} onClose={closeModal} />}
         {modal==="person"  && <PersonModal  form={form} setForm={setForm} onSave={save.person}  onClose={closeModal} />}
@@ -1885,7 +2339,15 @@ export function getAppHtml(): string {
         {modal==="case"    && <CaseModal    form={form} setForm={setForm} onSave={save.case}    onClose={closeModal} />}
 
         {showSearch && <GlobalSearch data={data} onNavigate={setTab} onClose={() => setShowSearch(false)} />}
+
+        {confirm && (
+          <ConfirmDialog title={confirm.title} message={confirm.message} confirmLabel={confirm.confirmLabel}
+            onClose={() => setConfirm(null)}
+            onConfirm={() => { confirm.onConfirm(); setConfirm(null); }} />
+        )}
       </div>
+      <div className="print-only"><PrintReport data={data} /></div>
+      </React.Fragment>
     );
   }
 
