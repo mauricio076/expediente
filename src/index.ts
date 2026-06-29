@@ -3,7 +3,8 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { createToken, verifyToken } from './auth'
 import { getAppHtml } from './templates/app'
 import { getLoginHtml } from './templates/login'
-import { listFolderImages, proxyThumbnail } from './google-drive'
+import { listFolderMedia, proxyThumbnail, proxyMedia } from './google-drive'
+import { getProviderCapabilities } from './providers'
 
 type Bindings = {
   DB: D1Database
@@ -140,6 +141,12 @@ async function saveData(c: any) {
 app.put('/api/data', requireAPI, saveData)
 app.post('/api/data', requireAPI, saveData)
 
+// ── Media providers (capability gate) ──────────────────────────────────────
+
+app.get('/api/providers', requireAPI, (c) => {
+  return c.json({ providers: getProviderCapabilities(c.env) })
+})
+
 // ── Google Drive proxy ─────────────────────────────────────────────────────
 
 app.get('/api/drive/folder/:folderId', requireAPI, async (c) => {
@@ -147,7 +154,7 @@ app.get('/api/drive/folder/:folderId', requireAPI, async (c) => {
     return c.json({ error: 'Google Drive no configurado. Agrega el secreto GOOGLE_SERVICE_ACCOUNT_JSON.' }, 503)
   }
   try {
-    const files = await listFolderImages(c.req.param('folderId'), c.env.GOOGLE_SERVICE_ACCOUNT_JSON)
+    const files = await listFolderMedia(c.req.param('folderId'), c.env.GOOGLE_SERVICE_ACCOUNT_JSON)
     return c.json({ files })
   } catch (err) {
     console.error('Drive folder error:', err)
@@ -163,6 +170,18 @@ app.get('/api/drive/thumb/:fileId', requireAPI, async (c) => {
     return proxyThumbnail(c.req.param('fileId'), c.env.GOOGLE_SERVICE_ACCOUNT_JSON)
   } catch (err) {
     console.error('Drive thumb error:', err)
+    return new Response('Error', { status: 500 })
+  }
+})
+
+app.get('/api/drive/media/:fileId', requireAPI, async (c) => {
+  if (!c.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    return new Response('Google Drive no configurado', { status: 503 })
+  }
+  try {
+    return proxyMedia(c.req.param('fileId'), c.env.GOOGLE_SERVICE_ACCOUNT_JSON, c.req.header('Range'))
+  } catch (err) {
+    console.error('Drive media error:', err)
     return new Response('Error', { status: 500 })
   }
 })

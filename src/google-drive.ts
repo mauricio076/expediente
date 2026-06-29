@@ -86,7 +86,7 @@ export interface DriveFile {
   webViewLink?: string
 }
 
-export async function listFolderImages(folderId: string, saJson: string): Promise<DriveFile[]> {
+export async function listFolderMedia(folderId: string, saJson: string): Promise<DriveFile[]> {
   validateId(folderId, 'folderId')
   const sa: ServiceAccount = JSON.parse(saJson)
   const token = await getAccessToken(sa)
@@ -96,7 +96,7 @@ export async function listFolderImages(folderId: string, saJson: string): Promis
 
   do {
     const params = new URLSearchParams({
-      q:        `'${folderId}' in parents and mimeType contains 'image/' and trashed = false`,
+      q:        `'${folderId}' in parents and (mimeType contains 'image/' or mimeType contains 'video/') and trashed = false`,
       fields:   'nextPageToken,files(id,name,mimeType,thumbnailLink,webViewLink)',
       pageSize: '1000',
       orderBy:  'name',
@@ -153,6 +153,36 @@ export async function proxyThumbnail(fileId: string, saJson: string): Promise<Re
       'Cache-Control': 'public, max-age=1800',
     },
   })
+}
+
+// Streams the raw bytes of a Drive file (used for inline video playback).
+// Forwards the Range header so the browser can seek within the video.
+export async function proxyMedia(fileId: string, saJson: string, range?: string | null): Promise<Response> {
+  validateId(fileId, 'fileId')
+
+  const sa: ServiceAccount = JSON.parse(saJson)
+  const token = await getAccessToken(sa)
+
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` }
+  if (range) headers['Range'] = range
+
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+    { headers }
+  )
+  if (!res.ok && res.status !== 206) {
+    return new Response('Media fetch failed', { status: res.status === 404 ? 404 : 502 })
+  }
+
+  const out = new Headers()
+  for (const h of ['Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges']) {
+    const v = res.headers.get(h)
+    if (v) out.set(h, v)
+  }
+  if (!out.has('Accept-Ranges')) out.set('Accept-Ranges', 'bytes')
+  out.set('Cache-Control', 'private, max-age=3600')
+
+  return new Response(res.body, { status: res.status, headers: out })
 }
 
 export function extractFolderId(url: string): string | null {
