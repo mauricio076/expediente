@@ -307,6 +307,83 @@ export function getAppHtml(buildId: string = 'dev'): string {
     </div>
   );
 
+  // ── parseDateInput ──────────────────────────────────────────────────────────
+  // Normaliza texto libre a "YYYY-MM-DD". Devuelve "" para entrada vacia y null
+  // cuando no se puede parsear (para no romper el dato guardado).
+  const pad2 = n => (n < 10 ? "0" + n : "" + n);
+  const buildIso = (y, m, d) => {
+    if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+    if (y < 100) y = 2000 + y; // anos de dos digitos -> 20xx
+    if (y < 1 || y > 9999) return null;
+    return ("" + y).padStart(4, "0") + "-" + pad2(m) + "-" + pad2(d);
+  };
+  const parseDateInput = raw => {
+    if (raw == null) return "";
+    const s = ("" + raw).trim();
+    if (s === "") return "";
+    if (!/^[0-9]{1,4}([\/.\-][0-9]{1,4}){2}$/.test(s)) return null;
+    const groups = s.split(/[\/.\-]/);
+    const parts = groups.map(p => parseInt(p, 10));
+    if (parts.length !== 3 || parts.some(n => isNaN(n))) return null;
+    let y, m, d;
+    if (groups[0].length === 4) { y = parts[0]; m = parts[1]; d = parts[2]; }   // ano primero
+    else { d = parts[0]; m = parts[1]; y = parts[2]; }                          // dia primero (es-MX)
+    return buildIso(y, m, d);
+  };
+
+  // ── DateInput ───────────────────────────────────────────────────────────────
+  // Acepta escritura/pegado libre ademas del selector de calendario nativo.
+  // Siempre emite "YYYY-MM-DD" (o "") hacia onChange.
+  const DateInput = ({ id, value, onChange, ariaRequired }) => {
+    const [text, setText] = useState(value || "");
+    const dateRef = useRef(null);
+    const lastValid = useRef(value || "");
+
+    useEffect(() => {
+      const v = value || "";
+      lastValid.current = v;
+      setText(v);
+    }, [value]);
+
+    const commit = () => {
+      const parsed = parseDateInput(text);
+      if (parsed === "") {
+        lastValid.current = ""; setText("");
+        if ((value || "") !== "") onChange("");
+        return;
+      }
+      if (parsed == null) { setText(lastValid.current || ""); return; } // revierte
+      lastValid.current = parsed; setText(parsed);
+      if ((value || "") !== parsed) onChange(parsed);
+    };
+
+    const openPicker = () => {
+      const el = dateRef.current;
+      if (!el) return;
+      try { if (typeof el.showPicker === "function") { el.showPicker(); return; } } catch (e) {}
+      if (typeof el.focus === "function") el.focus();
+      if (typeof el.click === "function") el.click();
+    };
+
+    return (
+      <div style={{ position: "relative", display: "flex", alignItems: "stretch", width: "100%" }}>
+        <input id={id} type="text" inputMode="numeric" aria-required={ariaRequired}
+          value={text} placeholder="AAAA-MM-DD o DD/MM/AAAA"
+          onChange={e => setText(e.target.value)} onBlur={commit}
+          onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); commit(); } }}
+          style={{ width: "100%", boxSizing: "border-box", fontSize: 13, paddingRight: 36 }} />
+        <button type="button" onClick={openPicker} title="Abrir calendario" aria-label="Abrir calendario"
+          style={{ position: "absolute", right: 1, top: 1, bottom: 1, width: 32, display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "none", cursor: "pointer", color: "var(--fg-3)", padding: 0 }}>
+          <Icon name="calendar" size={15} />
+        </button>
+        <input ref={dateRef} type="date" tabIndex={-1} aria-hidden="true"
+          value={(value || "").length === 10 ? value : ""}
+          onChange={e => { const v = e.target.value || ""; lastValid.current = v; setText(v); if ((value || "") !== v) onChange(v); }}
+          style={{ position: "absolute", right: 1, top: 1, width: 32, height: 1, opacity: 0, pointerEvents: "none", border: "none", padding: 0 }} />
+      </div>
+    );
+  };
+
   // ── Field ───────────────────────────────────────────────────────────────────
   const Field = ({ label, value, onChange, type = "text", as, rows = 3, options, required, placeholder }) => {
     const fid = useId();
@@ -322,6 +399,8 @@ export function getAppHtml(buildId: string = 'dev'): string {
         <select id={fid} aria-required={required ? true : undefined} value={value} onChange={e => onChange(e.target.value)} style={{ width: "100%", fontSize: 13 }}>
           {(options || []).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
+      ) : type === "date" ? (
+        <DateInput id={fid} value={value} onChange={onChange} ariaRequired={required ? true : undefined} />
       ) : (
         <input id={fid} aria-required={required ? true : undefined} type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
           style={{ width: "100%", boxSizing: "border-box", fontSize: 13 }} />
