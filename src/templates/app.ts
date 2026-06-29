@@ -75,9 +75,11 @@ export function getAppHtml(buildId: string = 'dev'): string {
     button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
       outline: 2px solid var(--terracotta-500); outline-offset: 2px; border-radius: var(--radius-sm);
     }
+    .print-only { display: none; }
     @media print {
-      .app-sidebar, .app-topbar, .app-footer, .app-backdrop { display: none !important; }
-      .app-content { overflow: visible !important; }
+      @page { margin: 16mm; }
+      .app-shell { display: none !important; }
+      .print-only { display: block !important; }
     }
   </style>
 </head>
@@ -1713,6 +1715,152 @@ export function getAppHtml(buildId: string = 'dev'): string {
     );
   };
 
+  // ── PrintReport (versión imprimible / PDF del expediente) ────────────────────
+  const PrintReport = ({ data }) => {
+    const ci = data.caseInfo || {};
+    const docName = id => { const d = (data.documents||[]).find(x => x.id === id); return d ? d.name : null; };
+    const phName  = id => { const p = (data.photos||[]).find(x => x.id === id); return p ? p.name : null; };
+    const attachLine = item => {
+      const names = [
+        ...(item.attachedDocs || []).map(docName),
+        ...(item.attachedPhotos || []).map(phName),
+      ].filter(Boolean);
+      return names.length ? names.join(" · ") : null;
+    };
+    const labelOf = (arr, id, key) => { const x = arr.find(e => e.id === id); return x ? x[key || 'label'] : id; };
+
+    const H = ({ children }) => (
+      <h2 style={{ fontFamily:"var(--font-display)", fontSize:15, fontWeight:600, color:"#1C2B2B",
+        margin:"18px 0 8px", paddingBottom:4, borderBottom:"1px solid #1C2B2B", breakAfter:"avoid" }}>{children}</h2>
+    );
+    const Item = ({ children }) => (
+      <div style={{ margin:"0 0 9px", breakInside:"avoid", pageBreakInside:"avoid" }}>{children}</div>
+    );
+    const meta = txt => <div style={{ fontSize:10.5, color:"#6E7676", fontFamily:"var(--font-mono)" }}>{txt}</div>;
+
+    const events  = data.events || [];
+    const dates   = data.upcomingDates || [];
+    const pend    = data.pendingRequests || [];
+    const docs    = data.documents || [];
+    const photos  = data.photos || [];
+    const notes   = data.notes || [];
+    const people  = data.people || [];
+    const related = data.relatedCases || [];
+
+    return (
+      <div style={{ fontFamily:"var(--font-sans)", color:"#2A3A3A", fontSize:12, lineHeight:1.55, background:"#FFFFFF", padding:"4px 2px" }}>
+        {/* Header */}
+        <div style={{ marginBottom:14 }}>
+          <div style={{ fontFamily:"var(--font-lockup)", fontWeight:700, fontSize:10, letterSpacing:"0.2em", textTransform:"uppercase", color:"#A85638" }}>Expediente</div>
+          <h1 style={{ fontFamily:"var(--font-display)", fontSize:24, fontWeight:600, color:"#1C2B2B", margin:"4px 0 6px", letterSpacing:"-0.01em" }}>{ci.title || "Mi caso"}</h1>
+          <div style={{ fontSize:11.5, color:"#4A5656", display:"flex", flexWrap:"wrap", gap:"2px 14px", flexDirection:"column" }}>
+            {ci.folderNo && <span><b>Folio:</b> {ci.folderNo}</span>}
+            {ci.status && <span><b>Estado:</b> {ci.status}</span>}
+            {ci.court && <span><b>Juzgado:</b> {ci.court}</span>}
+            {ci.opponent && <span><b>Contraparte:</b> {ci.opponent}</span>}
+          </div>
+        </div>
+
+        {ci.notes && (<><H>Descripción del caso</H><p style={{ margin:0, whiteSpace:"pre-wrap" }}>{ci.notes}</p></>)}
+
+        {events.length > 0 && (
+          <><H>Timeline ({events.length})</H>
+          {events.map(ev => { const att = attachLine(ev); return (
+            <Item key={ev.id}>
+              {meta(ev.date + "  ·  " + labelOf(EVENT_TYPES, ev.type))}
+              <div style={{ fontWeight:600, color:"#1C2B2B" }}>{ev.title}</div>
+              {ev.description && <div>{ev.description}</div>}
+              {att && <div style={{ fontSize:11, color:"#6E7676" }}>Adjuntos: {att}</div>}
+            </Item>
+          ); })}</>
+        )}
+
+        {dates.length > 0 && (
+          <><H>Próximas fechas ({dates.length})</H>
+          {dates.map(d => (
+            <Item key={d.id}>
+              {meta(d.date)}
+              <div style={{ fontWeight:600, color:"#1C2B2B" }}>{d.title}</div>
+              {d.location && <div>{d.location}</div>}
+              {d.notes && <div>{d.notes}</div>}
+            </Item>
+          ))}</>
+        )}
+
+        {pend.length > 0 && (
+          <><H>Pendientes ({pend.length})</H>
+          {pend.map(p => (
+            <Item key={p.id}>
+              <div><span style={{ fontFamily:"var(--font-mono)" }}>{p.done ? "[x]" : "[ ]"}</span> <b>{p.description}</b></div>
+              {(p.requestedBy || p.date) && meta([p.requestedBy, p.date].filter(Boolean).join("  ·  "))}
+            </Item>
+          ))}</>
+        )}
+
+        {docs.length > 0 && (
+          <><H>Documentos ({docs.length})</H>
+          {docs.map(d => (
+            <Item key={d.id}>
+              <div style={{ fontWeight:600, color:"#1C2B2B" }}>{d.name}</div>
+              {meta([labelOf(DOC_TYPES, d.type), d.dateAdded].filter(Boolean).join("  ·  "))}
+              {d.url && <div style={{ fontSize:10.5, color:"#4A6E78", wordBreak:"break-all" }}>{d.url}</div>}
+            </Item>
+          ))}</>
+        )}
+
+        {photos.length > 0 && (
+          <><H>Fotos y videos ({photos.length})</H>
+          {photos.map(p => (
+            <Item key={p.id}>
+              <div style={{ fontWeight:600, color:"#1C2B2B" }}>{p.name}{(p.kind === 'video' || (p.mimeType||'').startsWith('video/')) ? "  (video)" : ""}</div>
+              {meta([labelOf(PHOTO_SOURCES, p.source), p.dateAdded].filter(Boolean).join("  ·  "))}
+              {p.caption && <div>{p.caption}</div>}
+              {p.url && <div style={{ fontSize:10.5, color:"#4A6E78", wordBreak:"break-all" }}>{p.url}</div>}
+            </Item>
+          ))}</>
+        )}
+
+        {notes.length > 0 && (
+          <><H>Notas y testimonios ({notes.length})</H>
+          {notes.map(n => { const att = attachLine(n); return (
+            <Item key={n.id}>
+              <div style={{ fontWeight:600, color:"#1C2B2B" }}>{n.title}</div>
+              {(n.date || n.author) && meta([n.date, n.author].filter(Boolean).join("  ·  "))}
+              {n.content && <div style={{ whiteSpace:"pre-wrap" }}>{n.content}</div>}
+              {att && <div style={{ fontSize:11, color:"#6E7676" }}>Adjuntos: {att}</div>}
+            </Item>
+          ); })}</>
+        )}
+
+        {people.length > 0 && (
+          <><H>Personas clave ({people.length})</H>
+          {people.map(p => (
+            <Item key={p.id}>
+              <div style={{ fontWeight:600, color:"#1C2B2B" }}>{p.name} <span style={{ fontWeight:400, color:"#6E7676" }}>— {labelOf(PERSON_ROLES, p.role)}</span></div>
+              {(p.phone || p.email) && meta([p.phone, p.email].filter(Boolean).join("  ·  "))}
+              {p.notes && <div>{p.notes}</div>}
+            </Item>
+          ))}</>
+        )}
+
+        {related.length > 0 && (
+          <><H>Casos relacionados ({related.length})</H>
+          {related.map(r => (
+            <Item key={r.id}>
+              <div style={{ fontWeight:600, color:"#1C2B2B" }}>{r.number} <span style={{ fontWeight:400, color:"#6E7676" }}>— {labelOf(RELATED_TYPES, r.type)}</span></div>
+              {(r.authority || r.status) && meta([r.authority, r.status].filter(Boolean).join("  ·  "))}
+              {r.description && <div>{r.description}</div>}
+            </Item>
+          ))}</>
+        )}
+
+        <div style={{ marginTop:22, paddingTop:8, borderTop:"1px solid #C9C6BE", fontSize:10, color:"#8E9494", fontFamily:"var(--font-mono)" }}>
+          Expediente · documento generado para uso personal y privado · build {BUILD_ID}
+        </div>
+      </div>
+    );
+  };
+
   // ── App ─────────────────────────────────────────────────────────────────────
   function App() {
     const [data,       setData]       = useState(null);
@@ -1942,7 +2090,8 @@ export function getAppHtml(buildId: string = 'dev'): string {
     } : {};
 
     return (
-      <div style={{ display:"flex", height:"100vh", overflow:"hidden", ...themeVars }}>
+      <React.Fragment>
+      <div className="app-shell" style={{ display:"flex", height:"100vh", overflow:"hidden", ...themeVars }}>
         {isNarrow && navOpen && (
           <div className="app-backdrop" onClick={() => setNavOpen(false)}
             style={{ position:"fixed", inset:0, background:"rgba(28,43,43,0.45)", zIndex:60 }} />
@@ -1964,6 +2113,9 @@ export function getAppHtml(buildId: string = 'dev'): string {
             <SaveIndicator status={saveStatus} />
             <Btn onClick={() => { const idx = themeOrder.indexOf(theme); setTheme(themeOrder[(idx+1) % themeOrder.length]); }} variant="ghost" title={"Tema: " + theme} style={{ padding:"7px 10px", flexShrink:0 }}>
               <Icon name="palette" size={14} />
+            </Btn>
+            <Btn onClick={() => window.print()} variant="ghost" title="Imprimir / Guardar PDF" style={{ padding:"7px 10px", flexShrink:0 }}>
+              <Icon name="printer" size={14} />
             </Btn>
             {!isNarrow && (
               <Btn onClick={exportJSON} variant="ghost" title="Exportar JSON" style={{ padding:"7px 10px", flexShrink:0 }}>
@@ -2007,6 +2159,8 @@ export function getAppHtml(buildId: string = 'dev'): string {
             onConfirm={() => { confirm.onConfirm(); setConfirm(null); }} />
         )}
       </div>
+      <div className="print-only"><PrintReport data={data} /></div>
+      </React.Fragment>
     );
   }
 
