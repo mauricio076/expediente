@@ -3,7 +3,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { createToken, verifyToken } from './auth'
 import { getAppHtml } from './templates/app'
 import { getLoginHtml } from './templates/login'
-import { listFolderMedia, proxyThumbnail, proxyMedia } from './google-drive'
+import { listFolderMedia, proxyThumbnail, proxyMedia, getFileMeta } from './google-drive'
 import { getProviderCapabilities } from './providers'
 
 type Bindings = {
@@ -159,6 +159,19 @@ app.get('/api/drive/folder/:folderId', requireAPI, async (c) => {
     return c.json({ files })
   } catch (err) {
     console.error('Drive folder error:', err)
+    return c.json({ error: String(err) }, 500)
+  }
+})
+
+app.get('/api/drive/file/:fileId', requireAPI, async (c) => {
+  if (!c.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    return c.json({ error: 'Google Drive no configurado. Agrega el secreto GOOGLE_SERVICE_ACCOUNT_JSON.' }, 503)
+  }
+  try {
+    const file = await getFileMeta(c.req.param('fileId'), c.env.GOOGLE_SERVICE_ACCOUNT_JSON)
+    return c.json(file)
+  } catch (err) {
+    console.error('Drive file error:', err)
     return c.json({ error: String(err) }, 500)
   }
 })

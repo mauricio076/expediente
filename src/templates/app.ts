@@ -1506,16 +1506,20 @@ export function getAppHtml(buildId: string = 'dev'): string {
       </Modal>
     );
   };
-  const PhotoModal = ({ form, setForm, onSave, onClose }) => {
+  const PhotoModal = ({ form, setForm, onSave, onClose, onBulkImport }) => {
     const [providers, setProviders] = useState(MEDIA_PROVIDERS);
     const [providerId, setProviderId] = useState("google_drive");
     const [folderUrl, setFolderUrl] = useState("");
-    const [linkUrl, setLinkUrl]     = useState("");
-    const [linkKind, setLinkKind]   = useState("video");
     const [files, setFiles]         = useState(null);
     const [loading, setLoading]     = useState(false);
     const [error, setError]         = useState("");
+    const [selected, setSelected]   = useState({});
+    const [linkUrl, setLinkUrl]     = useState("");
+    const [linkKind, setLinkKind]   = useState("video");
+    const [linkLoading, setLinkLoading] = useState(false);
+    const [linkError, setLinkError] = useState("");
 
+    const today = new Date().toISOString().slice(0, 10);
     const provider = providers.find(p => p.id === providerId) || providers[0];
 
     // Gate: el backend puede reportar que un proveedor ya admite explorar carpetas
@@ -1532,12 +1536,47 @@ export function getAppHtml(buildId: string = 'dev'): string {
       return () => { alive = false; };
     }, []);
 
-    const switchProvider = id => { setProviderId(id); setFiles(null); setError(""); setFolderUrl(""); };
+    const switchProvider = id => { setProviderId(id); setFiles(null); setError(""); setFolderUrl(""); setSelected({}); };
+
+    const kindOfMime = m => (m||"").toLowerCase().startsWith("video/") ? "video" : "image";
+    const baseName = n => { const s = n || ""; const dot = s.lastIndexOf("."); return dot > 0 ? s.slice(0, dot) : s; };
+    const newId = i => "ph" + Date.now() + "-" + (i||0) + "-" + Math.random().toString(36).slice(2, 7);
+    // Solo conserva la racha inicial de caracteres válidos de id de Drive (sin regex con barras).
+    const cleanId = s => {
+      let out = "";
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if ((ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") || (ch >= "0" && ch <= "9") || ch === "_" || ch === "-") out += ch;
+        else break;
+      }
+      return out;
+    };
+    const extractDriveFileId = url => {
+      const u = url || "";
+      const marker = "/file/d/";
+      let idx = u.indexOf(marker);
+      if (idx >= 0) { const id = cleanId(u.slice(idx + marker.length)); if (id) return id; }
+      idx = u.indexOf("id=");
+      if (idx >= 0) { const id = cleanId(u.slice(idx + 3)); if (id) return id; }
+      return null;
+    };
+    const sourceForUrl = u => {
+      try { const h = new URL(u).hostname;
+        if (h.indexOf("dropbox.com") >= 0) return "dropbox";
+        if (h.indexOf("1drv.ms") >= 0 || h.indexOf("onedrive") >= 0 || h.indexOf("sharepoint") >= 0) return "onedrive";
+      } catch (e) {}
+      return "url";
+    };
+    const driveItem = (file, i) => ({
+      id: newId(i), name: baseName(file.name), source: "google_drive",
+      driveFileId: file.id, mimeType: file.mimeType || "", kind: kindOfMime(file.mimeType),
+      url: file.webViewLink || "", caption: "", tags: [], dateAdded: today,
+    });
 
     const loadFolder = async () => {
       const folderId = provider.parseFolder ? provider.parseFolder(folderUrl) : null;
       if (!folderId) { setError("Enlace de carpeta inválido para " + provider.label + "."); return; }
-      setLoading(true); setError("");
+      setLoading(true); setError(""); setSelected({});
       try {
         const r = await fetch(provider.folderApi + folderId);
         const data = await r.json();
@@ -1550,36 +1589,59 @@ export function getAppHtml(buildId: string = 'dev'): string {
       }
     };
 
+    const toggleSelect = id => setSelected(s => { const n = { ...s }; if (n[id]) delete n[id]; else n[id] = true; return n; });
+    const selectAll = () => { const n = {}; (files||[]).forEach(f => { n[f.id] = true; }); setSelected(n); };
+    const clearSelection = () => setSelected({});
+    const selCount = Object.keys(selected).length;
+    const importFiles = list => { if (!list.length) return; onBulkImport(list.map((f, i) => driveItem(f, i))); };
+    const importSelected = () => { const chosen = (files||[]).filter(f => selected[f.id]); importFiles(chosen.length ? chosen : (files||[])); };
+
+    // Edición rápida: cargar UN archivo en el formulario (doble clic).
     const pickFile = file => {
-      const vid = (file.mimeType||"").toLowerCase().startsWith('video/');
       setForm(f => ({
         ...f,
-        name:        f.name || file.name.replace(/\.[^.]+$/, ""),
-        source:      provider.id,
+        name:        f.name || baseName(file.name),
+        source:      "google_drive",
         url:         file.webViewLink || "",
         driveFileId: file.id,
         mimeType:    file.mimeType || "",
-        kind:        vid ? 'video' : 'image',
+        kind:        kindOfMime(file.mimeType),
       }));
-      setFiles(null);
-      setFolderUrl("");
+      setFiles(null); setFolderUrl(""); setSelected({});
     };
 
-    const addLink = () => {
-      const u = linkUrl.trim();
-      if (!u) return;
-      const kind = isDirectVideoUrl(u) ? 'video' : (isDirectImageUrl(u) ? 'image' : linkKind);
-      setForm(f => ({
-        ...f,
-        name:        f.name || (decodeURIComponent(u.split('?')[0].split('/').pop() || "").replace(/\.[^.]+$/, "") || provider.label),
-        source:      provider.id,
-        url:         u,
-        kind,
-        driveFileId: "",
-        mimeType:    "",
-      }));
-      setLinkUrl("");
+    // Agregar UN archivo desde un enlace pegado (archivo de Drive, o URL directa/Dropbox/OneDrive).
+    const addSingleLink = async () => {
+      const raw = (linkUrl || "").trim();
+      if (!raw) return;
+      setLinkError(""); setLinkLoading(true);
+      try {
+        if (raw.indexOf("drive.google.com") >= 0 || raw.indexOf("docs.google.com") >= 0) {
+          const fileId = extractDriveFileId(raw);
+          if (!fileId) throw new Error("No se pudo extraer el ID del archivo de Drive.");
+          const r = await fetch("/api/drive/file/" + fileId);
+          const meta = await r.json();
+          if (!r.ok) throw new Error(meta.error || "HTTP " + r.status);
+          onBulkImport([ driveItem({ id: meta.id, name: meta.name, mimeType: meta.mimeType, webViewLink: meta.webViewLink }, 0) ]);
+        } else {
+          const kind = isDirectVideoUrl(raw) ? "video" : (isDirectImageUrl(raw) ? "image" : linkKind);
+          const nm = baseName(decodeURIComponent(raw.split('?')[0].split('#')[0].split('/').pop() || "")) || "Archivo";
+          onBulkImport([{ id: newId(0), name: nm, source: sourceForUrl(raw), url: raw, mimeType: "", kind, caption: "", tags: [], dateAdded: today }]);
+        }
+        setLinkUrl("");
+      } catch(e) {
+        setLinkError("Error: " + e.message);
+      } finally {
+        setLinkLoading(false);
+      }
     };
+
+    const thumbBtnStyle = on => ({
+      position:"relative", padding:0,
+      border: on ? "2px solid #D27653" : "2px solid transparent",
+      borderRadius:"var(--radius-sm)", background:"rgba(28,43,43,0.06)", cursor:"pointer",
+      overflow:"hidden", aspectRatio:"1", display:"flex", alignItems:"center", justifyContent:"center",
+    });
 
     return (
       <Modal title={form.id ? "Editar foto o video" : "Nueva foto o video"} onClose={onClose} onSave={onSave}>
@@ -1621,49 +1683,88 @@ export function getAppHtml(buildId: string = 'dev'): string {
                 <div style={{ fontSize:11, color:"var(--fg-3)", marginTop:6 }}>Sin fotos ni videos en esta carpeta.</div>
               )}
               {files && files.length > 0 && (
-                <div style={{ marginTop:8, display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:5, maxHeight:180, overflowY:"auto" }}>
-                  {files.map(file => {
-                    const vid = (file.mimeType||"").toLowerCase().startsWith('video/');
-                    return (
-                    <button key={file.id} type="button" onClick={() => pickFile(file)} title={file.name}
-                      style={{ padding:0, border:"2px solid transparent", borderRadius:"var(--radius-sm)", background:"rgba(28,43,43,0.06)", cursor:"pointer", overflow:"hidden", aspectRatio:"1", display:"flex", alignItems:"center", justifyContent:"center", position:"relative" }}
-                      onMouseEnter={e => e.currentTarget.style.borderColor = "#D27653"}
-                      onMouseLeave={e => e.currentTarget.style.borderColor = "transparent"}>
-                      <img src={"/api/drive/thumb/" + file.id} alt={file.name}
-                        style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
-                      {vid && (
-                        <span style={{ position:"absolute", display:"inline-flex", alignItems:"center", justifyContent:"center", width:24, height:24, borderRadius:"50%", background:"rgba(28,43,43,0.55)", pointerEvents:"none" }}>
-                          <Icon name="play" size={12} color="#FFFFFF" />
-                        </span>
-                      )}
+                <div style={{ marginTop:8 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:6 }}>
+                    <span style={{ fontSize:11, color:"var(--fg-3)" }}>
+                      {selCount > 0 ? (selCount + " de " + files.length + " seleccionados") : (files.length + " archivos · toca para seleccionar")}
+                    </span>
+                    <button type="button" onClick={selectAll}
+                      style={{ fontSize:11, color:"var(--fg-2)", background:"none", border:"none", cursor:"pointer", padding:0, fontFamily:"var(--font-sans)", textDecoration:"underline" }}>
+                      Seleccionar todos
                     </button>
-                    );
-                  })}
+                    {selCount > 0 && (
+                      <button type="button" onClick={clearSelection}
+                        style={{ fontSize:11, color:"#B04A3A", background:"none", border:"none", cursor:"pointer", padding:0, fontFamily:"var(--font-sans)", textDecoration:"underline" }}>
+                        Quitar selección
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:5, maxHeight:180, overflowY:"auto" }}>
+                    {files.map(file => {
+                      const on = !!selected[file.id];
+                      const vid = kindOfMime(file.mimeType) === "video";
+                      return (
+                        <button key={file.id} type="button" onClick={() => toggleSelect(file.id)}
+                          onDoubleClick={() => pickFile(file)} title={file.name} style={thumbBtnStyle(on)}>
+                          <img src={"/api/drive/thumb/" + file.id} alt={file.name}
+                            style={{ width:"100%", height:"100%", objectFit:"cover", display:"block", opacity: on ? 0.65 : 1 }} />
+                          {vid && (
+                            <span style={{ position:"absolute", left:3, bottom:3, display:"inline-flex", alignItems:"center", justifyContent:"center", width:16, height:16, borderRadius:8, background:"rgba(0,0,0,0.55)" }}>
+                              <Icon name="play" size={9} color="#FFFFFF" />
+                            </span>
+                          )}
+                          {on && (
+                            <span style={{ position:"absolute", top:3, right:3, display:"inline-flex", alignItems:"center", justifyContent:"center", width:18, height:18, borderRadius:9, background:"#D27653" }}>
+                              <Icon name="check" size={11} color="#FFFFFF" />
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div style={{ display:"flex", gap:8, marginTop:8 }}>
+                    <Btn onClick={importSelected} variant="primary">
+                      <Icon name="download" size={13} />
+                      {selCount > 0 ? ("Importar " + selCount) : ("Importar todos (" + files.length + ")")}
+                    </Btn>
+                  </div>
+                  <div style={{ fontSize:10, color:"var(--fg-3)", marginTop:5 }}>
+                    Doble clic en una miniatura para editarla en el formulario antes de guardar.
+                  </div>
                 </div>
               )}
             </div>
           ) : (
-            <div>
-              <div style={{ fontSize:11, color:"var(--fg-3)", marginBottom:6 }}>
-                Pega el enlace compartido del archivo en {provider.label} y se mostrará aquí. (La exploración de carpetas por API llegará en una próxima versión.)
-              </div>
-              <div style={{ display:"flex", gap:6 }}>
-                <input type="url" value={linkUrl} onChange={e => setLinkUrl(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && addLink()}
-                  placeholder={provider.linkHint}
-                  style={{ flex:1, fontSize:12, padding:"6px 8px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.18)", background:"var(--input-bg)", color:"var(--fg-1)", fontFamily:"var(--font-sans)" }} />
-                <select value={linkKind} onChange={e => setLinkKind(e.target.value)}
-                  style={{ fontSize:12, padding:"6px 8px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.18)", background:"var(--input-bg)", color:"var(--fg-2)", cursor:"pointer", flexShrink:0, fontFamily:"var(--font-sans)" }}>
-                  <option value="video">Video</option>
-                  <option value="image">Foto</option>
-                </select>
-                <button type="button" onClick={addLink} disabled={!linkUrl.trim()}
-                  style={{ fontSize:12, padding:"6px 12px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.18)", background:"var(--input-bg)", color:"var(--fg-2)", cursor:"pointer", flexShrink:0, fontFamily:"var(--font-sans)" }}>
-                  Agregar
-                </button>
-              </div>
+            <div style={{ fontSize:11, color:"var(--fg-3)" }}>
+              La exploración de carpetas de {provider.label} llegará en una próxima versión. Mientras tanto, usa «Enlace de un archivo» (abajo) para agregar un archivo de {provider.label} o cualquier enlace directo.
             </div>
           )}
+        </div>
+        {/* Enlace de un archivo individual (cualquier fuente) */}
+        <div style={{ background:"rgba(28,43,43,0.04)", borderRadius:"var(--radius-md)", padding:"10px 12px", marginBottom:14 }}>
+          <div style={{ fontSize:11, fontWeight:600, color:"var(--fg-3)", marginBottom:6, textTransform:"uppercase", letterSpacing:"0.07em" }}>
+            Enlace de un archivo
+          </div>
+          <div style={{ display:"flex", gap:6 }}>
+            <input type="url" value={linkUrl} onChange={e => setLinkUrl(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && addSingleLink()}
+              placeholder="Enlace de Drive (/file/d/…), Dropbox, OneDrive o .mp4/.jpg directo"
+              style={{ flex:1, fontSize:12, padding:"6px 8px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.18)", background:"var(--input-bg)", color:"var(--fg-1)", fontFamily:"var(--font-sans)" }} />
+            <button type="button" onClick={addSingleLink} disabled={linkLoading || !linkUrl.trim()}
+              style={{ fontSize:12, padding:"6px 12px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.18)", background:"var(--input-bg)", color:"var(--fg-2)", cursor:"pointer", flexShrink:0, fontFamily:"var(--font-sans)" }}>
+              {linkLoading ? "…" : "Agregar"}
+            </button>
+          </div>
+          <div style={{ display:"flex", gap:10, marginTop:6, fontSize:11, color:"var(--fg-3)", alignItems:"center", flexWrap:"wrap" }}>
+            <span>Si es ambiguo, tratar como:</span>
+            <label style={{ display:"inline-flex", alignItems:"center", gap:4, cursor:"pointer" }}>
+              <input type="radio" name="linkKind" checked={linkKind==="image"} onChange={() => setLinkKind("image")} /> Foto
+            </label>
+            <label style={{ display:"inline-flex", alignItems:"center", gap:4, cursor:"pointer" }}>
+              <input type="radio" name="linkKind" checked={linkKind==="video"} onChange={() => setLinkKind("video")} /> Video
+            </label>
+          </div>
+          {linkError && <div style={{ fontSize:11, color:"#B04A3A", marginTop:5 }}>{linkError}</div>}
         </div>
         {/* Manual fields */}
         <Field label="Nombre" value={form.name||""} onChange={v => setForm(f => ({...f, name:v}))} required placeholder="Ej. Fachada del inmueble" />
@@ -2032,6 +2133,13 @@ export function getAppHtml(buildId: string = 'dev'): string {
 
     const closeModal = useCallback(() => { setModal(null); setForm({}); }, []);
 
+    // Importación en lote de fotos/videos (carpeta completa o varios seleccionados).
+    const bulkAddPhotos = items => {
+      if (!items || !items.length) { closeModal(); return; }
+      upd({ ...data, photos: [ ...(data.photos||[]), ...items ] });
+      closeModal();
+    };
+
     if (loading) return <LoadingState />;
     if (loadError) return <ErrorState message={loadError} />;
     if (!data) return null;
@@ -2222,7 +2330,7 @@ export function getAppHtml(buildId: string = 'dev'): string {
 
         {modal==="event"   && <EventModal   form={form} setForm={setForm} onSave={save.event}   onClose={closeModal} />}
         {modal==="doc"     && <DocModal     form={form} setForm={setForm} onSave={save.doc}     onClose={closeModal} />}
-        {modal==="photo"   && <PhotoModal   form={form} setForm={setForm} onSave={save.photo}   onClose={closeModal} />}
+        {modal==="photo"   && <PhotoModal   form={form} setForm={setForm} onSave={save.photo}   onClose={closeModal} onBulkImport={bulkAddPhotos} />}
         {modal==="note"    && <NoteModal    form={form} setForm={setForm} onSave={save.note}    onClose={closeModal} />}
         {modal==="pending" && <PendingModal form={form} setForm={setForm} onSave={save.pending} onClose={closeModal} />}
         {modal==="person"  && <PersonModal  form={form} setForm={setForm} onSave={save.person}  onClose={closeModal} />}

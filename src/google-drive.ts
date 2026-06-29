@@ -185,6 +185,26 @@ export async function proxyMedia(fileId: string, saJson: string, range?: string 
   return new Response(res.body, { status: res.status, headers: out })
 }
 
+// Metadata of a single Drive file (used to import an individual file by link).
+export async function getFileMeta(fileId: string, saJson: string): Promise<DriveFile> {
+  validateId(fileId, 'fileId')
+  const sa: ServiceAccount = JSON.parse(saJson)
+  const token = await getAccessToken(sa)
+
+  const res = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,mimeType,thumbnailLink,webViewLink`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
+  if (res.status === 404) throw new Error('Archivo no encontrado')
+  if (!res.ok) throw new Error(`Drive API ${res.status}: ${await res.text()}`)
+
+  const meta = await res.json() as DriveFile
+  if (meta.thumbnailLink) {
+    thumbUrlCache.set(meta.id, { url: meta.thumbnailLink, expires: Date.now() + 30 * 60 * 1000 })
+  }
+  return meta
+}
+
 export function extractFolderId(url: string): string | null {
   const m = url.match(/\/folders\/([a-zA-Z0-9_-]+)/)
   return m ? m[1] : null
