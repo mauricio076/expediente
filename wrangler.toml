@@ -10,6 +10,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 APP_USERNAME = "admin"
+BUILD_ID = "dev"
 
 # Local D1 (only used by `wrangler dev`). Remote deploys use the env blocks.
 [[d1_databases]]
@@ -34,7 +35,7 @@ port = 8787
 # ──────────────────────────────────────────────────────────────────────────────
 [env.dev]
 name = "expediente"
-vars = { APP_USERNAME = "admin" }
+vars = { APP_USERNAME = "admin", BUILD_ID = "dev" }
 routes = [
   { pattern = "casos-dev.axlotl.dev", custom_domain = true },
 ]
@@ -54,7 +55,7 @@ bucket_name = "expediente-docs"
 # ──────────────────────────────────────────────────────────────────────────────
 [env.production]
 name = "expediente"
-vars = { APP_USERNAME = "admin" }
+vars = { APP_USERNAME = "admin", BUILD_ID = "dev" }
 routes = [
   { pattern = "casos.axlotl.dev", custom_domain = true },
 ]

@@ -1,4 +1,4 @@
-export function getAppHtml(): string {
+export function getAppHtml(buildId: string = 'dev'): string {
   return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -72,10 +72,12 @@ export function getAppHtml(): string {
     aside { transition: background 220ms cubic-bezier(0.22,1,0.36,1); }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     @keyframes fadein { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-    @media print { .sidebar-wrapper { display: none !important; } }
-    @media (max-width: 640px) {
-      .sidebar-wrapper { display: none !important; }
-      .sidebar-wrapper.open { display: flex !important; position: fixed !important; z-index: 50; }
+    button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
+      outline: 2px solid var(--terracotta-500); outline-offset: 2px; border-radius: var(--radius-sm);
+    }
+    @media print {
+      .app-sidebar, .app-topbar, .app-footer, .app-backdrop { display: none !important; }
+      .app-content { overflow: visible !important; }
     }
   </style>
 </head>
@@ -86,7 +88,23 @@ export function getAppHtml(): string {
   <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
   <script type="text/babel">
   // ── React hooks ─────────────────────────────────────────────────────────────
-  const { useState, useEffect, useLayoutEffect, useRef, useCallback } = React;
+  const { useState, useEffect, useLayoutEffect, useRef, useCallback, useId } = React;
+
+  // Build actualmente servido (inyectado por el worker en el deploy).
+  const BUILD_ID = ${JSON.stringify(buildId)};
+
+  // Media query reactiva (para el shell responsive).
+  const useMediaQuery = q => {
+    const [match, setMatch] = useState(false);
+    useEffect(() => {
+      const mq = window.matchMedia(q);
+      const on = () => setMatch(mq.matches);
+      on();
+      mq.addEventListener ? mq.addEventListener("change", on) : mq.addListener(on);
+      return () => { mq.removeEventListener ? mq.removeEventListener("change", on) : mq.removeListener(on); };
+    }, [q]);
+    return match;
+  };
 
   // ── Design tokens: event/doc/person types ───────────────────────────────────
   const COLORS = {
@@ -231,7 +249,7 @@ export function getAppHtml(): string {
       color = danger ? "#B04A3A" : "var(--fg-2)";
     }
     return (
-      <button type={type} onClick={onClick} disabled={disabled} title={title}
+      <button type={type} onClick={onClick} disabled={disabled} title={title} aria-label={title}
         onMouseEnter={() => setOver(true)}
         onMouseLeave={() => { setOver(false); setPress(false); }}
         onMouseDown={() => setPress(true)} onMouseUp={() => setPress(false)}
@@ -288,42 +306,55 @@ export function getAppHtml(): string {
   );
 
   // ── Field ───────────────────────────────────────────────────────────────────
-  const Field = ({ label, value, onChange, type = "text", as, rows = 3, options, required, placeholder }) => (
+  const Field = ({ label, value, onChange, type = "text", as, rows = 3, options, required, placeholder }) => {
+    const fid = useId();
+    return (
     <div style={{ marginBottom: 12 }}>
-      <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--fg-2)", marginBottom: 4 }}>
-        {label}{required && <span style={{ color: "#B04A3A", marginLeft: 2 }}>*</span>}
+      <label htmlFor={fid} style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--fg-2)", marginBottom: 4 }}>
+        {label}{required && <span style={{ color: "#B04A3A", marginLeft: 2 }} aria-hidden="true">*</span>}
       </label>
       {as === "textarea" ? (
-        <textarea value={value} onChange={e => onChange(e.target.value)} rows={rows} placeholder={placeholder}
+        <textarea id={fid} aria-required={required ? true : undefined} value={value} onChange={e => onChange(e.target.value)} rows={rows} placeholder={placeholder}
           style={{ width: "100%", boxSizing: "border-box", fontFamily: "var(--font-sans)", fontSize: 13 }} />
       ) : as === "select" ? (
-        <select value={value} onChange={e => onChange(e.target.value)} style={{ width: "100%", fontSize: 13 }}>
+        <select id={fid} aria-required={required ? true : undefined} value={value} onChange={e => onChange(e.target.value)} style={{ width: "100%", fontSize: 13 }}>
           {(options || []).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
       ) : (
-        <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+        <input id={fid} aria-required={required ? true : undefined} type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
           style={{ width: "100%", boxSizing: "border-box", fontSize: 13 }} />
       )}
     </div>
-  );
+    );
+  };
 
   // ── Modal ───────────────────────────────────────────────────────────────────
-  const Modal = ({ title, onClose, children, onSave, saveLabel = "Guardar" }) => (
+  const Modal = ({ title, onClose, children, onSave, saveLabel = "Guardar" }) => {
+    const dialogRef = useRef(null);
+    useEffect(() => {
+      const prev = document.activeElement;
+      if (dialogRef.current) dialogRef.current.focus();
+      const onKey = e => { if (e.key === "Escape") onClose(); };
+      window.addEventListener("keydown", onKey);
+      return () => { window.removeEventListener("keydown", onKey); if (prev && prev.focus) prev.focus(); };
+    }, []);
+    return (
     <div style={{
       position: "fixed", inset: 0, background: "rgba(28,43,43,0.48)",
       display: "flex", alignItems: "center", justifyContent: "center",
       zIndex: 900, padding: "1rem",
     }} onClick={onClose}>
-      <div onClick={e => e.stopPropagation()} style={{
+      <div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label={title}
+        onClick={e => e.stopPropagation()} style={{
         background: "#FFFFFF", border: "1px solid rgba(28,43,43,0.12)",
         borderRadius: "var(--radius-xl)", padding: "1.5rem",
         width: "min(520px,100%)", maxHeight: "88vh", overflowY: "auto",
         boxShadow: "0 20px 48px -16px rgba(28,43,43,0.30)",
-        animation: "fadein 180ms ease-out",
+        animation: "fadein 180ms ease-out", outline: "none",
       }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
           <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: "var(--fg-1)" }}>{title}</h3>
-          <Btn onClick={onClose} variant="ghost" style={{ padding: "4px 8px" }}><Icon name="x" size={14} /></Btn>
+          <Btn onClick={onClose} variant="ghost" title="Cerrar" style={{ padding: "4px 8px" }}><Icon name="x" size={14} /></Btn>
         </div>
         {children}
         {onSave && (
@@ -337,6 +368,58 @@ export function getAppHtml(): string {
         )}
       </div>
     </div>
+    );
+  };
+
+  // ── ConfirmDialog (confirmación de borrado) ──────────────────────────────────
+  const ConfirmDialog = ({ title, message, confirmLabel = "Eliminar", onConfirm, onClose }) => {
+    const ref = useRef(null);
+    useEffect(() => {
+      if (ref.current) ref.current.focus();
+      const onKey = e => { if (e.key === "Escape") onClose(); };
+      window.addEventListener("keydown", onKey);
+      return () => window.removeEventListener("keydown", onKey);
+    }, []);
+    return (
+      <div style={{ position:"fixed", inset:0, background:"rgba(28,43,43,0.52)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:"1rem" }} onClick={onClose}>
+        <div ref={ref} tabIndex={-1} role="alertdialog" aria-modal="true" aria-label={title}
+          onClick={e => e.stopPropagation()} style={{
+          background:"#FFFFFF", border:"1px solid rgba(28,43,43,0.12)", borderRadius:"var(--radius-xl)",
+          padding:"1.4rem", width:"min(400px,100%)", boxShadow:"0 20px 48px -16px rgba(28,43,43,0.30)",
+          animation:"fadein 160ms ease-out", outline:"none",
+        }}>
+          <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom:14 }}>
+            <span style={{ flexShrink:0, display:"inline-flex", alignItems:"center", justifyContent:"center", width:34, height:34, borderRadius:"50%", background:"#FCEBEB", color:"#B04A3A" }}>
+              <Icon name="alert-triangle" size={17} color="#B04A3A" />
+            </span>
+            <div>
+              <h3 style={{ margin:"0 0 4px", fontSize:15, fontWeight:600, color:"var(--fg-1)" }}>{title}</h3>
+              <p style={{ margin:0, fontSize:13, color:"var(--fg-2)", lineHeight:1.6 }}>{message}</p>
+            </div>
+          </div>
+          <div style={{ display:"flex", justifyContent:"flex-end", gap:8 }}>
+            <Btn onClick={onClose} variant="outline">Cancelar</Btn>
+            <Btn onClick={onConfirm} variant="primary" style={{ background:"#B04A3A", borderColor:"#9A3F30", color:"#FFFFFF" }}>{confirmLabel}</Btn>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ── Footer (info + build servido) ────────────────────────────────────────────
+  const Footer = () => (
+    <footer className="app-footer" style={{
+      flexShrink:0, borderTop:"1px solid rgba(28,43,43,0.10)", background:"var(--card-bg)",
+      padding:"7px 20px", display:"flex", alignItems:"center", gap:10, flexWrap:"wrap",
+      fontSize:11, color:"var(--fg-3)", transition:"background 220ms ease",
+    }}>
+      <span style={{ fontFamily:"var(--font-lockup)", fontWeight:700, letterSpacing:"0.16em", textTransform:"uppercase" }}>Expediente</span>
+      <span>· Uso personal y privado</span>
+      <span style={{ marginLeft:"auto", display:"inline-flex", alignItems:"center", gap:5 }} title="Build actualmente servido">
+        <Icon name="git-commit-horizontal" size={11} />
+        <span style={{ fontFamily:"var(--font-mono)" }}>build {BUILD_ID}</span>
+      </span>
+    </footer>
   );
 
   // ── SearchBar ───────────────────────────────────────────────────────────────
@@ -1131,7 +1214,7 @@ export function getAppHtml(): string {
   ];
 
   // ── Sidebar ─────────────────────────────────────────────────────────────────
-  const Sidebar = ({ activeTab, onTab, caseInfo, pendingCount, nextDate }) => {
+  const Sidebar = ({ activeTab, onTab, caseInfo, pendingCount, nextDate, style = {} }) => {
     const statusColors = {
       "En proceso": { bg:"#FAEEDA", text:"#633806", border:"#BA7517" },
       "En pausa":   { bg:"#FCEBEB", text:"#791F1F", border:"#E24B4A" },
@@ -1140,12 +1223,13 @@ export function getAppHtml(): string {
     };
     const sc = statusColors[caseInfo.status] || statusColors["En proceso"];
     return (
-      <aside style={{
+      <aside className="app-sidebar" style={{
         width: 224, flexShrink: 0, background: "var(--sidebar-bg)",
         borderRight: "1px solid var(--sidebar-border)",
         display: "flex", flexDirection: "column",
         height: "100vh", overflow: "hidden",
         transition: "background 220ms cubic-bezier(0.22,1,0.36,1)",
+        ...style,
       }}>
         <div style={{ padding:"20px 16px 16px", borderBottom:"1px solid var(--sidebar-border)" }}>
           <div style={{ fontFamily:"var(--font-lockup)", fontWeight:700, fontSize:10, letterSpacing:"0.20em", textTransform:"uppercase", color:"var(--sidebar-accent)", marginBottom:8 }}>
@@ -1640,8 +1724,19 @@ export function getAppHtml(): string {
     const [showSearch, setShowSearch] = useState(false);
     const [theme,      setTheme]      = useState("papel");
     const [saveStatus, setSaveStatus] = useState("saved");
+    const [navOpen,    setNavOpen]    = useState(false);
+    const [confirm,    setConfirm]    = useState(null);
     const saveTimer   = useRef(null);
     const pendingData = useRef(null);
+    const isNarrow = useMediaQuery("(max-width: 760px)");
+
+    // Pide confirmación antes de un borrado irreversible.
+    const askDelete = (label, fn) => setConfirm({
+      title: "Eliminar " + label,
+      message: "Esta acción no se puede deshacer. ¿Eliminar de forma permanente?",
+      confirmLabel: "Eliminar",
+      onConfirm: fn,
+    });
 
     // Load data from API on mount
     useEffect(() => {
@@ -1838,12 +1933,29 @@ export function getAppHtml(): string {
       fetch("/logout", { method:"POST" }).finally(() => { window.location.href = "/login"; });
     };
 
+    const goTab = id => { setTab(id); setNavOpen(false); };
+    const drawerStyle = isNarrow ? {
+      position:"fixed", top:0, left:0, zIndex:61,
+      transform: navOpen ? "translateX(0)" : "translateX(-100%)",
+      transition:"transform 240ms cubic-bezier(0.22,1,0.36,1)",
+      boxShadow: navOpen ? "0 12px 40px -8px rgba(28,43,43,0.35)" : "none",
+    } : {};
+
     return (
       <div style={{ display:"flex", height:"100vh", overflow:"hidden", ...themeVars }}>
-        <Sidebar activeTab={tab} onTab={setTab} caseInfo={data.caseInfo} pendingCount={pendingCount} nextDate={nextDate} />
+        {isNarrow && navOpen && (
+          <div className="app-backdrop" onClick={() => setNavOpen(false)}
+            style={{ position:"fixed", inset:0, background:"rgba(28,43,43,0.45)", zIndex:60 }} />
+        )}
+        <Sidebar activeTab={tab} onTab={goTab} caseInfo={data.caseInfo} pendingCount={pendingCount} nextDate={nextDate} style={drawerStyle} />
         <div style={{ flex:1, display:"flex", flexDirection:"column", minWidth:0, background:"var(--content-bg)", transition:"background 220ms ease" }}>
           {/* Top bar */}
-          <div style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 20px", borderBottom:"1px solid rgba(28,43,43,0.10)", background:"var(--card-bg)", flexShrink:0, transition:"background 220ms ease" }}>
+          <div className="app-topbar" style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 20px", borderBottom:"1px solid rgba(28,43,43,0.10)", background:"var(--card-bg)", flexShrink:0, transition:"background 220ms ease" }}>
+            {isNarrow && (
+              <Btn onClick={() => setNavOpen(true)} variant="ghost" title="Abrir menú" style={{ padding:"7px 9px", flexShrink:0 }}>
+                <Icon name="menu" size={16} />
+              </Btn>
+            )}
             <button onClick={() => setShowSearch(true)} style={{ flex:1, display:"flex", alignItems:"center", gap:8, padding:"7px 12px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.14)", background:"rgba(28,43,43,0.03)", color:"var(--fg-3)", cursor:"text", textAlign:"left", fontFamily:"var(--font-sans)", fontSize:13, maxWidth:480 }}>
               <Icon name="search" size={14} />
               <span>Buscar en el expediente…</span>
@@ -1853,25 +1965,28 @@ export function getAppHtml(): string {
             <Btn onClick={() => { const idx = themeOrder.indexOf(theme); setTheme(themeOrder[(idx+1) % themeOrder.length]); }} variant="ghost" title={"Tema: " + theme} style={{ padding:"7px 10px", flexShrink:0 }}>
               <Icon name="palette" size={14} />
             </Btn>
-            <Btn onClick={exportJSON} variant="ghost" title="Exportar JSON" style={{ padding:"7px 10px", flexShrink:0 }}>
-              <Icon name="download" size={14} />
-            </Btn>
+            {!isNarrow && (
+              <Btn onClick={exportJSON} variant="ghost" title="Exportar JSON" style={{ padding:"7px 10px", flexShrink:0 }}>
+                <Icon name="download" size={14} />
+              </Btn>
+            )}
             <Btn onClick={logout} variant="ghost" title="Cerrar sesión" style={{ padding:"7px 10px", flexShrink:0 }}>
               <Icon name="log-out" size={14} />
             </Btn>
           </div>
           {/* Content */}
-          <div style={{ flex:1, overflowY:"auto", padding:"24px 28px" }}>
+          <div className="app-content" style={{ flex:1, overflowY:"auto", padding: isNarrow ? "16px 14px" : "24px 28px" }}>
             {tab==="summary"  && <ResumenView     data={data} onEditCase={() => openAdd("case")} onGoTo={setTab} />}
-            {tab==="pending"  && <PendientesView  data={data} onToggle={togglePending} onAdd={() => openAdd("pending")} onEdit={p => openEdit("pending",p)} onDelete={del.pending} />}
-            {tab==="dates"    && <FechasView      data={data} onAdd={() => openAdd("date")}    onEdit={d => openEdit("date",d)}    onDelete={del.date}    />}
-            {tab==="timeline" && <TimelineView    data={data} onAdd={() => openAdd("event")}   onEdit={e => openEdit("event",e)}   onDelete={del.event}   onToggleAttachment={toggleAttachment} />}
-            {tab==="docs"     && <DocumentosView  data={data} onAdd={() => openAdd("doc")}     onEdit={d => openEdit("doc",d)}     onDelete={deleteDoc}   />}
-            {tab==="photos"   && <FotosView       data={data} onAdd={() => openAdd("photo")}   onEdit={p => openEdit("photo",p)}   onDelete={del.photo}   />}
-            {tab==="people"   && <PersonasView    data={data} onAdd={() => openAdd("person")}  onEdit={p => openEdit("person",p)}  onDelete={del.person}  />}
-            {tab==="notes"    && <NotasView       data={data} onAdd={() => openAdd("note")}    onEdit={n => openEdit("note",n)}    onDelete={del.note}    onToggleAttachment={toggleAttachment} />}
-            {tab==="related"  && <RelacionadosView data={data} onAdd={() => openAdd("related")} onEdit={r => openEdit("related",r)} onDelete={del.related} />}
+            {tab==="pending"  && <PendientesView  data={data} onToggle={togglePending} onAdd={() => openAdd("pending")} onEdit={p => openEdit("pending",p)} onDelete={id => askDelete("pendiente", () => del.pending(id))} />}
+            {tab==="dates"    && <FechasView      data={data} onAdd={() => openAdd("date")}    onEdit={d => openEdit("date",d)}    onDelete={id => askDelete("fecha", () => del.date(id))} />}
+            {tab==="timeline" && <TimelineView    data={data} onAdd={() => openAdd("event")}   onEdit={e => openEdit("event",e)}   onDelete={id => askDelete("evento", () => del.event(id))}   onToggleAttachment={toggleAttachment} />}
+            {tab==="docs"     && <DocumentosView  data={data} onAdd={() => openAdd("doc")}     onEdit={d => openEdit("doc",d)}     onDelete={id => askDelete("documento", () => deleteDoc(id))} />}
+            {tab==="photos"   && <FotosView       data={data} onAdd={() => openAdd("photo")}   onEdit={p => openEdit("photo",p)}   onDelete={id => askDelete("foto o video", () => del.photo(id))} />}
+            {tab==="people"   && <PersonasView    data={data} onAdd={() => openAdd("person")}  onEdit={p => openEdit("person",p)}  onDelete={id => askDelete("persona", () => del.person(id))} />}
+            {tab==="notes"    && <NotasView       data={data} onAdd={() => openAdd("note")}    onEdit={n => openEdit("note",n)}    onDelete={id => askDelete("nota", () => del.note(id))}    onToggleAttachment={toggleAttachment} />}
+            {tab==="related"  && <RelacionadosView data={data} onAdd={() => openAdd("related")} onEdit={r => openEdit("related",r)} onDelete={id => askDelete("caso relacionado", () => del.related(id))} />}
           </div>
+          <Footer />
         </div>
 
         {modal==="event"   && <EventModal   form={form} setForm={setForm} onSave={save.event}   onClose={closeModal} />}
@@ -1885,6 +2000,12 @@ export function getAppHtml(): string {
         {modal==="case"    && <CaseModal    form={form} setForm={setForm} onSave={save.case}    onClose={closeModal} />}
 
         {showSearch && <GlobalSearch data={data} onNavigate={setTab} onClose={() => setShowSearch(false)} />}
+
+        {confirm && (
+          <ConfirmDialog title={confirm.title} message={confirm.message} confirmLabel={confirm.confirmLabel}
+            onClose={() => setConfirm(null)}
+            onConfirm={() => { confirm.onConfirm(); setConfirm(null); }} />
+        )}
       </div>
     );
   }

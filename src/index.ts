@@ -13,6 +13,7 @@ type Bindings = {
   JWT_SECRET: string
   APP_USERNAME: string
   GOOGLE_SERVICE_ACCOUNT_JSON: string
+  BUILD_ID: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -92,7 +93,7 @@ app.post('/logout', (c) => {
 
 // ── App ────────────────────────────────────────────────────────────────────
 
-app.get('/', requirePage, (c) => c.html(getAppHtml()))
+app.get('/', requirePage, (c) => c.html(getAppHtml(c.env.BUILD_ID || 'dev')))
 
 // ── API ────────────────────────────────────────────────────────────────────
 
