@@ -890,16 +890,33 @@ export function getAppHtml(buildId: string = 'dev'): string {
           {filtered.map(doc => {
             const dt = DOC_TYPES.find(d => d.id === doc.type) || DOC_TYPES[DOC_TYPES.length - 1];
             const r2Img = doc.type === 'r2' && doc.r2Key && isImage(doc.mimeType) && !failedThumbs[doc.id];
+            // Enlace para ABRIR el archivo inline en el navegador (visor de PDF/imágenes),
+            // sin descargar. La descarga es un botón aparte (?dl=1). Facilita el uso en móvil.
+            const viewHref = doc.type === 'r2' && doc.r2Key ? ('/api/file/' + doc.r2Key) : (doc.url || null);
+            const preview = r2Img
+              ? <img src={"/api/file/" + doc.r2Key}
+                  onError={() => setFailedThumbs(f => ({ ...f, [doc.id]: true }))}
+                  style={{ width:48, height:48, objectFit:"cover", borderRadius:"var(--radius-sm)", background:"rgba(28,43,43,0.06)" }} />
+              : <Icon name={doc.type === 'r2' ? mimeIcon(doc.mimeType) : dt.icon} size={20} color="var(--fg-3)" />;
+            const iconBtn = (href, dl, iconName, label) => (
+              <a href={href} target={dl ? undefined : "_blank"} rel="noreferrer" title={label} aria-label={label}
+                style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, borderRadius: "var(--radius-sm)", border: "1px solid rgba(28,43,43,0.14)", color: "var(--fg-2)", textDecoration: "none", flexShrink: 0 }}>
+                <Icon name={iconName} size={13} />
+              </a>
+            );
             return (
               <Card key={doc.id} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                {r2Img
-                  ? <img src={"/api/file/" + doc.r2Key}
-                      onError={() => setFailedThumbs(f => ({ ...f, [doc.id]: true }))}
-                      style={{ width:48, height:48, objectFit:"cover", borderRadius:"var(--radius-sm)", flexShrink:0, background:"rgba(28,43,43,0.06)" }} />
-                  : <Icon name={doc.type === 'r2' ? mimeIcon(doc.mimeType) : dt.icon} size={20} color="var(--fg-3)" />
-                }
+                {viewHref
+                  ? <a href={viewHref} target="_blank" rel="noreferrer" title={"Ver " + doc.name} aria-label={"Ver " + doc.name}
+                      style={{ flexShrink: 0, display: "inline-flex", lineHeight: 0, textDecoration: "none" }}>{preview}</a>
+                  : <span style={{ flexShrink: 0, display: "inline-flex", lineHeight: 0 }}>{preview}</span>}
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{doc.name}</div>
+                  {viewHref
+                    ? <a href={viewHref} target="_blank" rel="noreferrer" title={"Ver " + doc.name}
+                        style={{ fontSize: 13, fontWeight: 500, color: "var(--fg-1)", textDecoration: "none", cursor: "pointer", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                        onMouseEnter={e => e.currentTarget.style.color = "var(--accent)"}
+                        onMouseLeave={e => e.currentTarget.style.color = "var(--fg-1)"}>{doc.name}</a>
+                    : <div style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{doc.name}</div>}
                   <div style={{ fontSize: 11, color: "var(--fg-3)", marginTop: 3, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                     <span>{dt.label}</span>
                     {doc.size > 0 && <span>\xB7 {fmtSize(doc.size)}</span>}
@@ -911,15 +928,12 @@ export function getAppHtml(buildId: string = 'dev'): string {
                 </div>
                 <div style={{ display: "flex", gap: 4, flexShrink: 0, alignItems: "center" }}>
                   {doc.type === 'r2' && doc.r2Key && (
-                    <a href={"/api/file/" + doc.r2Key + "?dl=1"} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "5px 8px", borderRadius: "var(--radius-sm)", border: "1px solid rgba(28,43,43,0.14)", color: "var(--fg-2)", textDecoration: "none" }}>
-                      <Icon name="download" size={13} />
-                    </a>
+                    <React.Fragment>
+                      {iconBtn("/api/file/" + doc.r2Key, false, "eye", "Ver")}
+                      {iconBtn("/api/file/" + doc.r2Key + "?dl=1", true, "download", "Descargar")}
+                    </React.Fragment>
                   )}
-                  {doc.url && doc.type !== 'r2' && (
-                    <a href={doc.url} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "5px 8px", borderRadius: "var(--radius-sm)", border: "1px solid rgba(28,43,43,0.14)", color: "var(--fg-2)", textDecoration: "none" }}>
-                      <Icon name="external-link" size={13} />
-                    </a>
-                  )}
+                  {doc.url && doc.type !== 'r2' && iconBtn(doc.url, false, "external-link", "Abrir")}
                   <ActionBtns onEdit={() => onEdit(doc)} onDelete={() => onDelete(doc.id)} />
                 </div>
               </Card>
