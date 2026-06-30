@@ -3,6 +3,11 @@ main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
+# Genera src/build-info.ts (BUILD_ID) antes de empaquetar. Corre también en el
+# deploy automático de Cloudflare (Workers Builds) al mergear a main.
+[build]
+command = "node scripts/gen-build-id.mjs"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Base config (used by `wrangler dev` for local development).
 # Named environments below are the actual deploy targets.
@@ -10,7 +15,6 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 APP_USERNAME = "admin"
-BUILD_ID = "dev"
 
 # Local D1 (only used by `wrangler dev`). Remote deploys use the env blocks.
 [[d1_databases]]
@@ -35,7 +39,7 @@ port = 8787
 # ──────────────────────────────────────────────────────────────────────────────
 [env.dev]
 name = "expediente"
-vars = { APP_USERNAME = "admin", BUILD_ID = "dev" }
+vars = { APP_USERNAME = "admin" }
 routes = [
   { pattern = "casos-dev.axlotl.dev", custom_domain = true },
 ]
@@ -55,7 +59,7 @@ bucket_name = "expediente-docs"
 # ──────────────────────────────────────────────────────────────────────────────
 [env.production]
 name = "expediente"
-vars = { APP_USERNAME = "admin", BUILD_ID = "dev" }
+vars = { APP_USERNAME = "admin" }
 routes = [
   { pattern = "casos.axlotl.dev", custom_domain = true },
 ]

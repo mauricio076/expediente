@@ -1,3 +1,5 @@
+import { BUILD_ID } from '../build-info'
+
 export function getLoginHtml(error?: string): string {
   const errorHtml = error
     ? `<div class="error" role="alert">${escapeHtml(error)}</div>`
@@ -134,7 +136,7 @@ export function getLoginHtml(error?: string): string {
         </label>
         <button type="submit">Entrar</button>
       </form>
-      <div class="footer">Acceso restringido &middot; Uso personal</div>
+      <div class="footer">Acceso restringido &middot; Uso personal<br />build ${escapeHtml(BUILD_ID)}</div>
     </div>
   </main>
 </body>
