@@ -5,6 +5,7 @@ import { getAppHtml } from './templates/app'
 import { getLoginHtml } from './templates/login'
 import { listFolderMedia, proxyThumbnail, proxyMedia, getFileMeta } from './google-drive'
 import { getProviderCapabilities } from './providers'
+import { BUILD_ID } from './build-info'
 
 type Bindings = {
   DB: D1Database
@@ -13,7 +14,6 @@ type Bindings = {
   JWT_SECRET: string
   APP_USERNAME: string
   GOOGLE_SERVICE_ACCOUNT_JSON: string
-  BUILD_ID: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -91,9 +91,12 @@ app.post('/logout', (c) => {
   return c.redirect('/login')
 })
 
+// Identificador del build servido — público, para validar despliegues (curl /version).
+app.get('/version', (c) => c.json({ build: BUILD_ID }))
+
 // ── App ────────────────────────────────────────────────────────────────────
 
-app.get('/', requirePage, (c) => c.html(getAppHtml(c.env.BUILD_ID || 'dev')))
+app.get('/', requirePage, (c) => c.html(getAppHtml(BUILD_ID)))
 
 // ── API ────────────────────────────────────────────────────────────────────
 
