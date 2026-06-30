@@ -135,6 +135,26 @@ export function getAppHtml(buildId: string = 'dev'): string {
     { id:"local",        label:"Disco local",    icon:"laptop-minimal" },
     { id:"other",        label:"Otro enlace",    icon:"link"         },
   ];
+  // Categorías de documento (qué ES el documento), independientes de la fuente (type).
+  // El orden también define la prioridad de inferencia automática.
+  const DOC_CATEGORIES = [
+    { id:"identidad",      label:"Identidad y actas",       icon:"users",     color:"blue",   match:["acta","curp","ine","pasaporte","credencial","identific","matrimonio"] },
+    { id:"escritos",       label:"Escritos y promociones",  icon:"file-text", color:"purple", match:["demanda","contestaci","escrito","promoci","amparo","denuncia","querella","alegato"] },
+    { id:"resoluciones",   label:"Resoluciones y oficios",  icon:"scale",     color:"teal",   match:["acuerdo","sentencia","resoluci","oficio","notificaci","exhorto","convenio"] },
+    { id:"pruebas",        label:"Pruebas y dictámenes",    icon:"activity",  color:"coral",  match:["electrocardiograma","ecocardiograma","certificado","dictamen","pericial","medic","médic","reporte","estudio","radiograf","constancia","ecograf"] },
+    { id:"comunicaciones", label:"Comunicaciones",          icon:"mail",      color:"green",  match:["gmail","correo","email","whatsapp","mensaje","carta","conversaci","chat"] },
+    { id:"finanzas",       label:"Comprobantes y finanzas", icon:"receipt",   color:"amber",  match:["comprobante","recibo","colegiatura","factura","deposito","depósito","prestamo","préstamo","pago","cuenta","nomina","nómina","transferencia"] },
+    { id:"otros",          label:"Otros",                   icon:"file",      color:"gray",   match:[] },
+  ];
+  // Categoría de un documento: la explícita (doc.category) o una inferida del nombre+tags.
+  const inferCategory = doc => {
+    if (doc && doc.category) return doc.category;
+    const hay = (((doc && doc.name) || "") + " " + (((doc && doc.tags) || []).join(" "))).toLowerCase();
+    const tokens = hay.split(/[^a-z0-9]+/);
+    const has = k => (k.length <= 3 ? tokens.indexOf(k) >= 0 : hay.indexOf(k) >= 0);
+    for (const c of DOC_CATEGORIES) { if (c.match.some(has)) return c.id; }
+    return "otros";
+  };
   const PHOTO_SOURCES = [
     { id:"google_drive",  label:"Google Drive",   icon:"hard-drive"  },
     { id:"icloud",        label:"iCloud",         icon:"cloud"       },
@@ -864,82 +884,130 @@ export function getAppHtml(buildId: string = 'dev'): string {
   // ── DocumentosView ──────────────────────────────────────────────────────────
   const DocumentosView = ({ data, onAdd, onEdit, onDelete }) => {
     const [search, setSearch] = useState("");
-    const [filterType, setFilterType] = useState("all");
+    const [catFilter, setCatFilter] = useState("all");
+    const [collapsed, setCollapsed] = useState({});
     const [failedThumbs, setFailedThumbs] = useState({});
-    const filtered = data.documents.filter(doc => {
-      const q = search.toLowerCase();
-      const matchSearch = !q || doc.name.toLowerCase().includes(q) || (doc.tags || []).some(t => t.toLowerCase().includes(q));
-      const matchType = filterType === "all" || doc.type === filterType;
-      return matchSearch && matchType;
-    });
+
+    const q = search.toLowerCase();
+    const catOf = id => DOC_CATEGORIES.find(c => c.id === id) || DOC_CATEGORIES[DOC_CATEGORIES.length - 1];
+    const withCat = (data.documents || []).map(d => ({ d, cat: inferCategory(d) }));
+    const matchesSearch = x => !q
+      || x.d.name.toLowerCase().includes(q)
+      || (x.d.tags || []).some(t => t.toLowerCase().includes(q))
+      || catOf(x.cat).label.toLowerCase().includes(q);
+    const searched = withCat.filter(matchesSearch);
+    const counts = {}; searched.forEach(x => { counts[x.cat] = (counts[x.cat] || 0) + 1; });
+    const visible = searched.filter(x => catFilter === "all" || x.cat === catFilter);
+    const grouped = catFilter === "all" && !q;
+    const presentCats = DOC_CATEGORIES.filter(c => withCat.some(x => x.cat === c.id));
+
+    const DocCard = doc => {
+      const dt = DOC_TYPES.find(d => d.id === doc.type) || DOC_TYPES[DOC_TYPES.length - 1];
+      const r2Img = doc.type === 'r2' && doc.r2Key && isImage(doc.mimeType) && !failedThumbs[doc.id];
+      const viewHref = doc.type === 'r2' && doc.r2Key ? ('/api/file/' + doc.r2Key) : (doc.url || null);
+      const preview = r2Img
+        ? <img src={"/api/file/" + doc.r2Key}
+            onError={() => setFailedThumbs(f => ({ ...f, [doc.id]: true }))}
+            style={{ width:48, height:48, objectFit:"cover", borderRadius:"var(--radius-sm)", background:"rgba(28,43,43,0.06)" }} />
+        : <Icon name={doc.type === 'r2' ? mimeIcon(doc.mimeType) : dt.icon} size={20} color="var(--fg-3)" />;
+      const iconBtn = (href, dl, iconName, label) => (
+        <a href={href} target={dl ? undefined : "_blank"} rel="noreferrer" title={label} aria-label={label}
+          style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, borderRadius: "var(--radius-sm)", border: "1px solid rgba(28,43,43,0.14)", color: "var(--fg-2)", textDecoration: "none", flexShrink: 0 }}>
+          <Icon name={iconName} size={13} />
+        </a>
+      );
+      return (
+        <Card key={doc.id} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          {viewHref
+            ? <a href={viewHref} target="_blank" rel="noreferrer" title={"Ver " + doc.name} aria-label={"Ver " + doc.name}
+                style={{ flexShrink: 0, display: "inline-flex", lineHeight: 0, textDecoration: "none" }}>{preview}</a>
+            : <span style={{ flexShrink: 0, display: "inline-flex", lineHeight: 0 }}>{preview}</span>}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {viewHref
+              ? <a href={viewHref} target="_blank" rel="noreferrer" title={"Ver " + doc.name}
+                  style={{ fontSize: 13, fontWeight: 500, color: "var(--fg-1)", textDecoration: "none", cursor: "pointer", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  onMouseEnter={e => e.currentTarget.style.color = "var(--accent)"}
+                  onMouseLeave={e => e.currentTarget.style.color = "var(--fg-1)"}>{doc.name}</a>
+              : <div style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{doc.name}</div>}
+            <div style={{ fontSize: 11, color: "var(--fg-3)", marginTop: 3, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              <span>{dt.label}</span>
+              {doc.size > 0 && <span>\xB7 {fmtSize(doc.size)}</span>}
+              {doc.dateAdded && <span>\xB7 {doc.dateAdded}</span>}
+              {(doc.tags || []).map(t => (
+                <span key={t} style={{ background: "rgba(28,43,43,0.06)", border: "1px solid rgba(28,43,43,0.12)", borderRadius: 999, fontSize: 10, padding: "1px 6px" }}>{t}</span>
+              ))}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 4, flexShrink: 0, alignItems: "center" }}>
+            {doc.type === 'r2' && doc.r2Key && (
+              <React.Fragment>
+                {iconBtn("/api/file/" + doc.r2Key, false, "eye", "Ver")}
+                {iconBtn("/api/file/" + doc.r2Key + "?dl=1", true, "download", "Descargar")}
+              </React.Fragment>
+            )}
+            {doc.url && doc.type !== 'r2' && iconBtn(doc.url, false, "external-link", "Abrir")}
+            <ActionBtns onEdit={() => onEdit(doc)} onDelete={() => onDelete(doc.id)} />
+          </div>
+        </Card>
+      );
+    };
+
+    const chip = (id, label, count, color) => {
+      const active = catFilter === id;
+      const c = color ? COLORS[color] : null;
+      return (
+        <button key={id} type="button" onClick={() => setCatFilter(active ? "all" : id)} style={{
+          fontSize: 11, padding: "4px 10px", borderRadius: 999, cursor: "pointer", fontFamily: "var(--font-sans)",
+          border: "1px solid " + (active && c ? c.border : active ? "var(--fg-2)" : "rgba(28,43,43,0.14)"),
+          background: active && c ? c.bg : active ? "var(--fg-1)" : "transparent",
+          color: active && c ? c.text : active ? "var(--card-bg)" : "var(--fg-3)",
+          fontWeight: active ? 600 : 400, display: "inline-flex", alignItems: "center", gap: 5,
+        }}>{label}<span style={{ opacity: 0.65 }}>{count}</span></button>
+      );
+    };
+
     return (
       <div>
-        <SectionHeader title="Documentos" subtitle="Repositorio de archivos vinculados al caso."
+        <SectionHeader title="Documentos" subtitle={(data.documents || []).length + " archivos \xB7 agrupados por categoría."}
           action={<Btn onClick={onAdd} variant="outline"><Icon name="plus" size={13} />Agregar</Btn>} />
-        <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
-          <SearchBar value={search} onChange={setSearch} placeholder="Buscar por nombre o etiqueta…" style={{ flex: 1, minWidth: 180 }} />
-          <select value={filterType} onChange={e => setFilterType(e.target.value)} style={{ fontSize: 12, padding: "7px 10px", flexShrink: 0 }}>
-            <option value="all">Todos los tipos</option>
-            {DOC_TYPES.map(dt => <option key={dt.id} value={dt.id}>{dt.label}</option>)}
-          </select>
+        <div style={{ marginBottom: 12 }}>
+          <SearchBar value={search} onChange={setSearch} placeholder="Buscar por nombre, etiqueta o categoría…" />
         </div>
-        {filtered.length === 0 && <EmptyState icon="files" message={search ? "Sin resultados para \xAB" + search + "\xBB." : "Sin documentos registrados."} action={
-          !search && <Btn onClick={onAdd} variant="outline"><Icon name="plus" size={13} />Agregar documento</Btn>
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 16 }}>
+          {chip("all", "Todos", searched.length, null)}
+          {presentCats.map(c => chip(c.id, c.label, counts[c.id] || 0, c.color))}
+        </div>
+        {visible.length === 0 && <EmptyState icon="files" message={q ? "Sin resultados para \xAB" + search + "\xBB." : "Sin documentos registrados."} action={
+          !q && <Btn onClick={onAdd} variant="outline"><Icon name="plus" size={13} />Agregar documento</Btn>
         } />}
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {filtered.map(doc => {
-            const dt = DOC_TYPES.find(d => d.id === doc.type) || DOC_TYPES[DOC_TYPES.length - 1];
-            const r2Img = doc.type === 'r2' && doc.r2Key && isImage(doc.mimeType) && !failedThumbs[doc.id];
-            // Enlace para ABRIR el archivo inline en el navegador (visor de PDF/imágenes),
-            // sin descargar. La descarga es un botón aparte (?dl=1). Facilita el uso en móvil.
-            const viewHref = doc.type === 'r2' && doc.r2Key ? ('/api/file/' + doc.r2Key) : (doc.url || null);
-            const preview = r2Img
-              ? <img src={"/api/file/" + doc.r2Key}
-                  onError={() => setFailedThumbs(f => ({ ...f, [doc.id]: true }))}
-                  style={{ width:48, height:48, objectFit:"cover", borderRadius:"var(--radius-sm)", background:"rgba(28,43,43,0.06)" }} />
-              : <Icon name={doc.type === 'r2' ? mimeIcon(doc.mimeType) : dt.icon} size={20} color="var(--fg-3)" />;
-            const iconBtn = (href, dl, iconName, label) => (
-              <a href={href} target={dl ? undefined : "_blank"} rel="noreferrer" title={label} aria-label={label}
-                style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, borderRadius: "var(--radius-sm)", border: "1px solid rgba(28,43,43,0.14)", color: "var(--fg-2)", textDecoration: "none", flexShrink: 0 }}>
-                <Icon name={iconName} size={13} />
-              </a>
-            );
+        {grouped ? (
+          DOC_CATEGORIES.filter(c => (counts[c.id] || 0) > 0).map(c => {
+            const items = searched.filter(x => x.cat === c.id);
+            const open = !collapsed[c.id];
+            const col = COLORS[c.color];
             return (
-              <Card key={doc.id} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                {viewHref
-                  ? <a href={viewHref} target="_blank" rel="noreferrer" title={"Ver " + doc.name} aria-label={"Ver " + doc.name}
-                      style={{ flexShrink: 0, display: "inline-flex", lineHeight: 0, textDecoration: "none" }}>{preview}</a>
-                  : <span style={{ flexShrink: 0, display: "inline-flex", lineHeight: 0 }}>{preview}</span>}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  {viewHref
-                    ? <a href={viewHref} target="_blank" rel="noreferrer" title={"Ver " + doc.name}
-                        style={{ fontSize: 13, fontWeight: 500, color: "var(--fg-1)", textDecoration: "none", cursor: "pointer", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                        onMouseEnter={e => e.currentTarget.style.color = "var(--accent)"}
-                        onMouseLeave={e => e.currentTarget.style.color = "var(--fg-1)"}>{doc.name}</a>
-                    : <div style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{doc.name}</div>}
-                  <div style={{ fontSize: 11, color: "var(--fg-3)", marginTop: 3, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                    <span>{dt.label}</span>
-                    {doc.size > 0 && <span>\xB7 {fmtSize(doc.size)}</span>}
-                    {doc.dateAdded && <span>\xB7 {doc.dateAdded}</span>}
-                    {(doc.tags || []).map(t => (
-                      <span key={t} style={{ background: "rgba(28,43,43,0.06)", border: "1px solid rgba(28,43,43,0.12)", borderRadius: 999, fontSize: 10, padding: "1px 6px" }}>{t}</span>
-                    ))}
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 4, flexShrink: 0, alignItems: "center" }}>
-                  {doc.type === 'r2' && doc.r2Key && (
-                    <React.Fragment>
-                      {iconBtn("/api/file/" + doc.r2Key, false, "eye", "Ver")}
-                      {iconBtn("/api/file/" + doc.r2Key + "?dl=1", true, "download", "Descargar")}
-                    </React.Fragment>
-                  )}
-                  {doc.url && doc.type !== 'r2' && iconBtn(doc.url, false, "external-link", "Abrir")}
-                  <ActionBtns onEdit={() => onEdit(doc)} onDelete={() => onDelete(doc.id)} />
-                </div>
-              </Card>
+              <div key={c.id} style={{ marginBottom: 14 }}>
+                <button type="button" onClick={() => setCollapsed(s => ({ ...s, [c.id]: !s[c.id] }))} style={{
+                  width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "6px 4px", background: "none",
+                  border: "none", borderBottom: "1px solid rgba(28,43,43,0.10)", cursor: "pointer", fontFamily: "var(--font-sans)",
+                  color: "var(--fg-2)", marginBottom: 6,
+                }}>
+                  <Icon name={open ? "chevron-down" : "chevron-right"} size={14} color="var(--fg-3)" />
+                  <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 22, height: 22, borderRadius: "var(--radius-sm)", background: col ? col.bg : "rgba(28,43,43,0.06)" }}>
+                    <Icon name={c.icon} size={12} color={col ? col.text : "var(--fg-2)"} />
+                  </span>
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>{c.label}</span>
+                  <span style={{ fontSize: 11, color: "var(--fg-3)" }}>{items.length}</span>
+                </button>
+                {open && <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{items.map(x => DocCard(x.d))}</div>}
+              </div>
             );
-          })}
-        </div>
+          })
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {visible.map(x => DocCard(x.d))}
+          </div>
+        )}
       </div>
     );
   };
@@ -1513,6 +1581,7 @@ export function getAppHtml(buildId: string = 'dev'): string {
           )}
         </div>
         <Field label="Nombre del archivo" value={form.name||""} onChange={v => setForm(f => ({...f, name:v}))} required placeholder="Ej. Acta de nacimiento.pdf" />
+        <Field label="Categoría" as="select" value={form.category || inferCategory(form)} onChange={v => setForm(f => ({...f, category:v}))} options={DOC_CATEGORIES.map(c => ({ value:c.id, label:c.label }))} />
         <Field label="Fuente" as="select" value={form.type||"google_drive"} onChange={v => setForm(f => ({...f, type:v}))} options={DOC_TYPES.map(t => ({ value:t.id, label:t.label }))} />
         {form.type !== 'r2' && <Field label="URL / enlace al archivo" type="url" value={form.url||""} onChange={v => setForm(f => ({...f, url:v}))} placeholder="https://…" />}
         <Field label="Etiquetas (separadas por coma)" value={form.tags||""} onChange={v => setForm(f => ({...f, tags:v}))} placeholder="Ej. legal, original, pendiente" />
@@ -2196,7 +2265,7 @@ export function getAppHtml(buildId: string = 'dev'): string {
       },
       doc: () => {
         if (!form.name) return;
-        const doc = { ...form, id: form.id || "d" + Date.now(), tags: tagsArr(form.tags) };
+        const doc = { ...form, id: form.id || "d" + Date.now(), tags: tagsArr(form.tags), category: form.category || inferCategory({ name: form.name, tags: tagsArr(form.tags) }) };
         upd({ ...data, documents: form.id ? data.documents.map(d => d.id === doc.id ? doc : d) : [...data.documents, doc] });
         closeModal();
       },
