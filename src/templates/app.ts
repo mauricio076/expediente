@@ -75,6 +75,10 @@ export function getAppHtml(buildId: string = 'dev'): string {
     button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
       outline: 2px solid var(--terracotta-500); outline-offset: 2px; border-radius: var(--radius-sm);
     }
+    /* iOS hace zoom al enfocar inputs con fuente < 16px; evitarlo en móvil */
+    @media (max-width: 640px) {
+      input, textarea, select { font-size: 16px !important; }
+    }
     .print-only { display: none; }
     @media print {
       @page { margin: 16mm; }
@@ -1110,15 +1114,14 @@ export function getAppHtml(buildId: string = 'dev'): string {
                           <Icon name="play" size={20} color="#FFFFFF" />
                         </span>
                       </button>
-                    : (photo.driveFileId && !failed)
-                      ? <img src={"/api/drive/thumb/" + photo.driveFileId} alt={photo.name}
-                          onError={() => markFailed(photo.id)}
-                          style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
-                      : (photo.url && isDirectImageUrl(photo.url) && !failed)
-                        ? <img src={photo.url} alt={photo.name}
+                    : ((photo.driveFileId || (photo.url && isDirectImageUrl(photo.url))) && !failed)
+                      ? <button type="button" onClick={() => setPlaying(photo)} title={"Ver " + photo.name}
+                          style={{ all:"unset", cursor:"zoom-in", width:"100%", height:"100%", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                          <img src={photo.driveFileId ? ("/api/drive/thumb/" + photo.driveFileId) : photo.url} alt={photo.name}
                             onError={() => markFailed(photo.id)}
                             style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
-                        : <Icon name="image" size={36} color="var(--fg-3)" />
+                        </button>
+                      : <Icon name="image" size={36} color="var(--fg-3)" />
                   }
                   {/* Overlay actions */}
                   <div style={{ position:"absolute", top:6, right:6, display:"flex", gap:4 }}>
@@ -1155,12 +1158,16 @@ export function getAppHtml(buildId: string = 'dev'): string {
             );
           })}
         </div>
-        {/* Video lightbox */}
+        {/* Lightbox de video e imagen */}
         {playing && (
           <div onClick={() => setPlaying(null)} style={{ position:"fixed", inset:0, background:"rgba(28,43,43,0.78)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:950, padding:"1rem" }}>
             <div onClick={e => e.stopPropagation()} style={{ position:"relative", width:"min(900px,100%)" }}>
-              <video src={videoSrc(playing)} controls autoPlay
-                style={{ width:"100%", maxHeight:"82vh", borderRadius:"var(--radius-lg)", background:"#000", display:"block" }} />
+              {isVideoItem(playing)
+                ? <video src={videoSrc(playing)} controls autoPlay
+                    style={{ width:"100%", maxHeight:"82vh", borderRadius:"var(--radius-lg)", background:"#000", display:"block" }} />
+                : <img src={playing.driveFileId ? ("/api/drive/media/" + playing.driveFileId) : playing.url} alt={playing.name}
+                    style={{ width:"100%", maxHeight:"82vh", objectFit:"contain", borderRadius:"var(--radius-lg)", background:"#101a1a", display:"block" }} />
+              }
               <div style={{ marginTop:8, display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
                 <div style={{ color:"#F3F1EC", fontSize:13, fontWeight:500, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{playing.name}</div>
                 <div style={{ display:"flex", gap:10, flexShrink:0, alignItems:"center" }}>
@@ -1872,6 +1879,156 @@ export function getAppHtml(buildId: string = 'dev'): string {
       </Modal>
     );
   };
+  // ── ShareModal (enlaces de solo lectura para terceros) ──────────────────────
+  const ShareModal = ({ data, onCreate, onRevoke, onClose }) => {
+    const [mode, setMode]         = useState("list");      // list | new
+    const [title, setTitle]       = useState("");
+    const [scope, setScope]       = useState("selection"); // selection | all
+    const [selDocs, setSelDocs]   = useState({});
+    const [selPhotos, setSelPhotos] = useState({});
+    const [expiresAt, setExpiresAt] = useState("");
+    const [copiedId, setCopiedId] = useState("");
+    const [confirmDel, setConfirmDel] = useState(null);
+
+    const shares = data.shares || [];
+    const docs   = data.documents || [];
+    const photos = data.photos || [];
+    const today  = new Date().toISOString().slice(0, 10);
+
+    const genToken = () => {
+      const a = new Uint8Array(20);
+      crypto.getRandomValues(a);
+      let s = "";
+      for (let i = 0; i < a.length; i++) s += ("0" + a[i].toString(16)).slice(-2);
+      return s;
+    };
+    const linkFor = s => window.location.origin + "/share/" + s.token;
+    const copy = s => {
+      const done = () => { setCopiedId(s.id); setTimeout(() => setCopiedId(""), 1800); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(linkFor(s)).then(done).catch(() => window.prompt("Copia el enlace:", linkFor(s)));
+      else window.prompt("Copia el enlace:", linkFor(s));
+    };
+    const toggleIn = setter => id => setter(m => { const n = { ...m }; if (n[id]) delete n[id]; else n[id] = true; return n; });
+    const nSel = Object.keys(selDocs).length + Object.keys(selPhotos).length;
+
+    const create = () => {
+      if (scope === "selection" && nSel === 0) return;
+      const share = {
+        id: "s" + Date.now(),
+        token: genToken(),
+        title: title.trim() || (scope === "all" ? "Expediente completo" : "Contenido compartido"),
+        scope,
+        items: { documents: Object.keys(selDocs), photos: Object.keys(selPhotos) },
+        createdAt: today,
+        expiresAt: expiresAt || "",
+      };
+      onCreate(share);
+      setMode("list"); setTitle(""); setScope("selection"); setSelDocs({}); setSelPhotos({}); setExpiresAt("");
+      copy(share);
+    };
+
+    const pickRow = (key, checked, onClick, iconName, name, extra) => (
+      <div key={key} onClick={onClick}
+        style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 8px", borderRadius:"var(--radius-sm)", cursor:"pointer", marginBottom:2, background: checked ? "#E1F5EE" : "transparent" }}>
+        <Icon name={checked ? "check" : "circle"} size={13} color={checked ? "#085041" : "var(--fg-3)"} />
+        <Icon name={iconName} size={12} color="var(--fg-3)" />
+        <span style={{ fontSize:12, flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", fontWeight: checked ? 500 : 400, color: checked ? "#085041" : "var(--fg-1)" }}>{name}</span>
+        {extra}
+      </div>
+    );
+    const groupLabel = txt => (
+      <div style={{ fontSize:11, fontWeight:600, color:"var(--fg-3)", margin:"10px 0 6px", textTransform:"uppercase", letterSpacing:"0.08em" }}>{txt}</div>
+    );
+
+    return (
+      <Modal title="Compartir en solo lectura" onClose={onClose}
+        onSave={mode === "new" ? create : undefined} saveLabel="Crear enlace">
+        {mode === "list" && (
+          <div>
+            <p style={{ margin:"0 0 12px", fontSize:12, color:"var(--fg-2)", lineHeight:1.6 }}>
+              Crea enlaces de solo lectura para terceros (abogado, perito…). Los archivos se sirven a través de este sitio: el tercero puede <b>ver y descargar</b>, sin recibir acceso a tu Drive, iCloud o Dropbox. Puedes revocar un enlace en cualquier momento.
+            </p>
+            {shares.length === 0 && (
+              <div style={{ fontSize:12, color:"var(--fg-3)", padding:"14px 0" }}>Aún no has creado enlaces compartidos.</div>
+            )}
+            {shares.map(s => {
+              const nItems = s.scope === "all" ? "todo el expediente" : (((s.items||{}).documents||[]).length + ((s.items||{}).photos||[]).length) + " elementos";
+              const expired = s.expiresAt && s.expiresAt < today;
+              return (
+                <div key={s.id} style={{ border:"1px solid rgba(28,43,43,0.12)", borderRadius:"var(--radius-md)", padding:"10px 12px", marginBottom:8 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                    <span style={{ fontSize:13, fontWeight:600, flex:1, minWidth:120 }}>{s.title}</span>
+                    {expired && <span style={{ fontSize:10, fontWeight:600, color:"#B04A3A", background:"#FCEBEB", borderRadius:999, padding:"2px 8px" }}>Expirado</span>}
+                  </div>
+                  <div style={{ fontSize:11, color:"var(--fg-3)", marginTop:3 }}>
+                    {nItems} · creado {s.createdAt}{s.expiresAt ? " · expira " + s.expiresAt : ""}
+                  </div>
+                  <div style={{ display:"flex", gap:6, marginTop:8, flexWrap:"wrap" }}>
+                    <Btn onClick={() => copy(s)} variant="outline" style={{ fontSize:12 }}>
+                      <Icon name={copiedId === s.id ? "check" : "copy"} size={12} />{copiedId === s.id ? "Copiado" : "Copiar enlace"}
+                    </Btn>
+                    <a href={linkFor(s)} target="_blank" rel="noreferrer"
+                      style={{ display:"inline-flex", alignItems:"center", gap:5, fontSize:12, fontWeight:500, padding:"6px 10px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.22)", color:"var(--fg-2)", textDecoration:"none" }}>
+                      <Icon name="external-link" size={12} />Abrir
+                    </a>
+                    {confirmDel === s.id
+                      ? <Btn onClick={() => { onRevoke(s.id); setConfirmDel(null); }} variant="primary" style={{ fontSize:12, background:"#B04A3A", borderColor:"#9A3F30" }}>
+                          <Icon name="trash-2" size={12} />Confirmar revocación
+                        </Btn>
+                      : <Btn onClick={() => setConfirmDel(s.id)} variant="ghost" danger style={{ fontSize:12 }}>
+                          <Icon name="trash-2" size={12} />Revocar
+                        </Btn>}
+                  </div>
+                </div>
+              );
+            })}
+            <div style={{ marginTop:12 }}>
+              <Btn onClick={() => setMode("new")} variant="primary"><Icon name="plus" size={13} />Nuevo enlace</Btn>
+            </div>
+          </div>
+        )}
+        {mode === "new" && (
+          <div>
+            <button type="button" onClick={() => setMode("list")}
+              style={{ fontSize:12, color:"var(--fg-3)", background:"none", border:"none", cursor:"pointer", padding:0, marginBottom:10, fontFamily:"var(--font-sans)", display:"inline-flex", alignItems:"center", gap:4 }}>
+              <Icon name="arrow-left" size={12} />Volver a la lista
+            </button>
+            <Field label="Nombre del enlace" value={title} onChange={setTitle} placeholder="Ej. Videos para el abogado" />
+            <div style={{ marginBottom:12 }}>
+              <div style={{ fontSize:12, fontWeight:500, color:"var(--fg-2)", marginBottom:6 }}>Alcance</div>
+              <label style={{ display:"flex", alignItems:"center", gap:7, fontSize:13, cursor:"pointer", marginBottom:4 }}>
+                <input type="radio" name="shareScope" checked={scope === "selection"} onChange={() => setScope("selection")} />
+                Selección de documentos y fotos/videos
+              </label>
+              <label style={{ display:"flex", alignItems:"center", gap:7, fontSize:13, cursor:"pointer" }}>
+                <input type="radio" name="shareScope" checked={scope === "all"} onChange={() => setScope("all")} />
+                Todo el expediente (lectura completa: timeline, notas, documentos y multimedia)
+              </label>
+            </div>
+            {scope === "selection" && (
+              <div style={{ background:"rgba(28,43,43,0.03)", border:"1px solid rgba(28,43,43,0.10)", borderRadius:"var(--radius-md)", padding:"10px 12px", marginBottom:12, maxHeight:260, overflowY:"auto" }}>
+                {groupLabel("Fotos y videos")}
+                {photos.length === 0 && <div style={{ fontSize:12, color:"var(--fg-3)" }}>Sin fotos ni videos.</div>}
+                {photos.map(p => pickRow("p" + p.id, !!selPhotos[p.id], () => toggleIn(setSelPhotos)(p.id), isVideoItem(p) ? "video" : "image", p.name,
+                  isVideoItem(p) && <Icon name="play" size={10} color="var(--accent)" />))}
+                {groupLabel("Documentos")}
+                {docs.length === 0 && <div style={{ fontSize:12, color:"var(--fg-3)" }}>Sin documentos.</div>}
+                {docs.map(d => pickRow("d" + d.id, !!selDocs[d.id], () => toggleIn(setSelDocs)(d.id), "file-text", d.name, null))}
+              </div>
+            )}
+            <Field label="Fecha de expiración (opcional)" type="date" value={expiresAt} onChange={setExpiresAt} />
+            <div style={{ fontSize:11, color:"var(--fg-3)", marginTop:-6 }}>
+              {scope === "selection"
+                ? (nSel + " elemento" + (nSel === 1 ? "" : "s") + " seleccionado" + (nSel === 1 ? "" : "s") + (nSel === 0 ? " — elige al menos uno" : ""))
+                : "Se compartirá una vista de solo lectura de todo el expediente."}
+              {" "}Al crear el enlace se copiará automáticamente.
+            </div>
+          </div>
+        )}
+      </Modal>
+    );
+  };
+
   const NoteModal = ({ form, setForm, onSave, onClose }) => (
     <Modal title={form.id ? "Editar nota" : "Nueva nota"} onClose={onClose} onSave={onSave}>
       <Field label="Título" value={form.title||""} onChange={v => setForm(f => ({...f, title:v}))} required />
@@ -2223,6 +2380,10 @@ export function getAppHtml(buildId: string = 'dev'): string {
       closeModal();
     };
 
+    // Enlaces compartidos de solo lectura (crear / revocar).
+    const createShare = share => upd({ ...data, shares: [ ...(data.shares||[]), share ] });
+    const revokeShare = id => upd({ ...data, shares: (data.shares||[]).filter(s => s.id !== id) });
+
     if (loading) return <LoadingState />;
     if (loadError) return <ErrorState message={loadError} />;
     if (!data) return null;
@@ -2384,6 +2545,9 @@ export function getAppHtml(buildId: string = 'dev'): string {
             <Btn onClick={() => { const idx = themeOrder.indexOf(theme); setTheme(themeOrder[(idx+1) % themeOrder.length]); }} variant="ghost" title={"Tema: " + theme} style={{ padding:"7px 10px", flexShrink:0 }}>
               <Icon name="palette" size={14} />
             </Btn>
+            <Btn onClick={() => setModal("share")} variant="ghost" title="Compartir en solo lectura" style={{ padding:"7px 10px", flexShrink:0 }}>
+              <Icon name="share-2" size={14} />
+            </Btn>
             <Btn onClick={() => window.print()} variant="ghost" title="Imprimir / Guardar PDF" style={{ padding:"7px 10px", flexShrink:0 }}>
               <Icon name="printer" size={14} />
             </Btn>
@@ -2420,6 +2584,7 @@ export function getAppHtml(buildId: string = 'dev'): string {
         {modal==="date"    && <DateModal    form={form} setForm={setForm} onSave={save.date}    onClose={closeModal} />}
         {modal==="related" && <RelatedModal form={form} setForm={setForm} onSave={save.related} onClose={closeModal} />}
         {modal==="case"    && <CaseModal    form={form} setForm={setForm} onSave={save.case}    onClose={closeModal} />}
+        {modal==="share"   && <ShareModal   data={data} onCreate={createShare} onRevoke={revokeShare} onClose={closeModal} />}
 
         {showSearch && <GlobalSearch data={data} onNavigate={setTab} onClose={() => setShowSearch(false)} />}
 
