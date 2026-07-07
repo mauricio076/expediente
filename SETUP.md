@@ -126,6 +126,71 @@ vars = { APP_USERNAME = "tu_usuario" }
 
 ---
 
+## Paso 4bis — Conectar proveedores de nube (opcional)
+
+Estos secretos son opcionales: sin ellos la app funciona igual, solo que la
+sección de Fotos/Videos no podrá explorar carpetas de esa nube (se puede
+seguir usando "Enlace de un archivo" con enlaces directos/compartidos).
+
+### Google Drive (cuenta de servicio, sin OAuth)
+
+1. En [Google Cloud Console](https://console.cloud.google.com/) crea una
+   **cuenta de servicio** (Service Account) en cualquier proyecto, con el rol
+   básico "Viewer" (no necesita permisos especiales).
+2. Genera una **clave JSON** para esa cuenta de servicio y descárgala.
+3. Comparte (como "Lector") las carpetas de Drive que quieras poder explorar
+   con el correo de la cuenta de servicio (algo como
+   `nombre@proyecto.iam.gserviceaccount.com`).
+4. Sube el contenido completo del JSON como secreto:
+   ```bash
+   npx wrangler secret put GOOGLE_SERVICE_ACCOUNT_JSON --env dev
+   # pega el contenido completo del archivo .json descargado
+   ```
+
+### Dropbox (OAuth2 con refresh token)
+
+1. Crea una app en la [Dropbox App Console](https://www.dropbox.com/developers/apps)
+   → "Create app" → tipo **Scoped access**, acceso a **App folder** o
+   **Full Dropbox** (según prefieras), cualquier nombre.
+2. En la pestaña **Permissions** de la app, activa los scopes
+   `files.metadata.read` y `files.content.read`, y guarda.
+3. En la pestaña **Settings**, agrega como **Redirect URI** exactamente:
+   `https://casos-dev.axlotl.dev/api/dropbox/callback`
+   (y la de producción si aplica: `https://casos.axlotl.dev/api/dropbox/callback`).
+4. Copia el **App key** y **App secret** de esa misma pestaña, y súbelos:
+   ```bash
+   npx wrangler secret put DROPBOX_APP_KEY --env dev
+   npx wrangler secret put DROPBOX_APP_SECRET --env dev
+   ```
+5. En la app, abre **Fotos → Agregar → pestaña Dropbox → "Conectar Dropbox"**
+   y autoriza. Queda conectado hasta que lo desconectes desde ahí mismo.
+
+### OneDrive personal (Microsoft Graph, OAuth2 con refresh token)
+
+1. Registra una app en [Azure Portal → App registrations](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade)
+   → "New registration". En **Supported account types** elige
+   **"Personal Microsoft accounts only"** (o la opción que incluya cuentas
+   personales) — esta integración es solo para OneDrive personal, no
+   SharePoint/organizacional.
+2. En **Redirect URI** (tipo Web) agrega exactamente:
+   `https://casos-dev.axlotl.dev/api/onedrive/callback`
+3. En **Certificates & secrets**, crea un **Client secret** nuevo y copia su
+   *value* (solo se muestra una vez).
+4. En **API permissions**, agrega el permiso delegado `Files.Read` de
+   Microsoft Graph (y `offline_access`, normalmente ya incluido por defecto).
+5. Copia el **Application (client) ID** y el **Client secret**, y súbelos:
+   ```bash
+   npx wrangler secret put ONEDRIVE_CLIENT_ID --env dev
+   npx wrangler secret put ONEDRIVE_CLIENT_SECRET --env dev
+   ```
+6. En la app, abre **Fotos → Agregar → pestaña OneDrive → "Conectar OneDrive"**
+   y autoriza.
+
+Tras subir cualquiera de estos secretos hay que volver a desplegar
+(`npm run deploy`) para que el worker los tome.
+
+---
+
 ## Paso 5 — Desplegar (entorno de desarrollo)
 
 ```bash
