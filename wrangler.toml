@@ -36,6 +36,16 @@ port = 8787
 # Secrets — set BEFORE deploying:
 #   wrangler secret put APP_PASSWORD --env dev
 #   wrangler secret put JWT_SECRET   --env dev
+#
+# Optional secrets (enable each cloud provider's full integration):
+#   wrangler secret put GOOGLE_SERVICE_ACCOUNT_JSON --env dev   # Google Drive (service account JSON)
+#   wrangler secret put DROPBOX_APP_KEY             --env dev   # Dropbox OAuth app
+#   wrangler secret put DROPBOX_APP_SECRET          --env dev
+#   wrangler secret put ONEDRIVE_CLIENT_ID          --env dev   # OneDrive (Microsoft Graph) OAuth app
+#   wrangler secret put ONEDRIVE_CLIENT_SECRET      --env dev
+# See README/SETUP for how to register the Dropbox and Azure AD apps and which
+# redirect URIs to configure (https://<domain>/api/dropbox/callback and
+# https://<domain>/api/onedrive/callback).
 # ──────────────────────────────────────────────────────────────────────────────
 [env.dev]
 name = "expediente"

@@ -186,11 +186,17 @@ export function getAppHtml(buildId: string = 'dev'): string {
       },
     },
     {
-      id:"dropbox", label:"Dropbox", icon:"cloud", browse:false,
+      id:"dropbox", label:"Dropbox", icon:"cloud", browse:false, connectFlow:true,
+      connectUrl:"/api/dropbox/connect", disconnectUrl:"/api/dropbox/disconnect",
+      rootId:"", rootLabel:"Dropbox",
+      folderApi:id => "/api/dropbox/folder?path=" + encodeURIComponent(id),
       linkHint:"https://www.dropbox.com/s/…/archivo.mp4",
     },
     {
-      id:"onedrive", label:"OneDrive", icon:"cloud", browse:false,
+      id:"onedrive", label:"OneDrive", icon:"cloud", browse:false, connectFlow:true,
+      connectUrl:"/api/onedrive/connect", disconnectUrl:"/api/onedrive/disconnect",
+      rootId:"root", rootLabel:"OneDrive",
+      folderApi:id => "/api/onedrive/folder/" + encodeURIComponent(id),
       linkHint:"https://1drv.ms/…  ·  https://onedrive.live.com/…",
     },
   ];
@@ -761,8 +767,8 @@ export function getAppHtml(buildId: string = 'dev'): string {
           const ph = (data.photos||[]).find(p => p.id === id);
           if (!ph) return null;
           const vid = isVideoItem(ph);
-          const href = ph.driveFileId
-            ? (vid ? '/api/drive/media/' + ph.driveFileId : '/api/drive/thumb/' + ph.driveFileId)
+          const href = hasRemoteRef(ph)
+            ? (vid ? videoSrc(ph) : mediaThumbUrl(ph))
             : ((vid ? toPlayableUrl(ph.url) : ph.url) || '#');
           return chip('p'+id, href, vid ? 'video' : 'image', ph.name, vid);
         })}
@@ -1049,10 +1055,22 @@ export function getAppHtml(buildId: string = 'dev'): string {
     } catch (e) {}
     return url;
   };
-  // Resolve the playable source for a video gallery item.
-  const videoSrc = photo => photo.driveFileId
-    ? ("/api/drive/media/" + photo.driveFileId)
-    : toPlayableUrl(photo.url);
+  // Resolve the playable / streamable source for a gallery item, regardless of provider.
+  const videoSrc = photo => {
+    if (photo.driveFileId) return "/api/drive/media/" + photo.driveFileId;
+    if (photo.source === "dropbox" && photo.remoteRef) return "/api/dropbox/media?path=" + encodeURIComponent(photo.remoteRef);
+    if (photo.source === "onedrive" && photo.remoteRef) return "/api/onedrive/media/" + encodeURIComponent(photo.remoteRef);
+    return toPlayableUrl(photo.url);
+  };
+  // Resolve a thumbnail URL for a gallery item when one can be proxied through the backend.
+  const mediaThumbUrl = photo => {
+    if (photo.driveFileId) return "/api/drive/thumb/" + photo.driveFileId;
+    if (photo.source === "dropbox" && photo.remoteRef) return "/api/dropbox/thumb?path=" + encodeURIComponent(photo.remoteRef);
+    if (photo.source === "onedrive" && photo.remoteRef) return "/api/onedrive/thumb/" + encodeURIComponent(photo.remoteRef);
+    return null;
+  };
+  // True if this gallery item has a remote (Drive/Dropbox/OneDrive) reference we can stream/thumbnail.
+  const hasRemoteRef = photo => !!(photo.driveFileId || ((photo.source === "dropbox" || photo.source === "onedrive") && photo.remoteRef));
   const fmtSize = bytes => {
     if (!bytes) return '';
     if (bytes < 1024) return bytes + ' B';
@@ -1100,8 +1118,8 @@ export function getAppHtml(buildId: string = 'dev'): string {
                   {isVid
                     ? <button type="button" onClick={() => setPlaying(photo)} title={"Reproducir " + photo.name}
                         style={{ all:"unset", cursor:"pointer", width:"100%", height:"100%", position:"relative", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                        {(photo.driveFileId && !failed)
-                          ? <img src={"/api/drive/thumb/" + photo.driveFileId} alt={photo.name}
+                        {(mediaThumbUrl(photo) && !failed)
+                          ? <img src={mediaThumbUrl(photo)} alt={photo.name}
                               onError={() => markFailed(photo.id)}
                               style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
                           : (photo.url && isDirectVideoUrl(photo.url) && !failed)
@@ -1114,10 +1132,10 @@ export function getAppHtml(buildId: string = 'dev'): string {
                           <Icon name="play" size={20} color="#FFFFFF" />
                         </span>
                       </button>
-                    : ((photo.driveFileId || (photo.url && isDirectImageUrl(photo.url))) && !failed)
+                    : ((hasRemoteRef(photo) || (photo.url && isDirectImageUrl(photo.url))) && !failed)
                       ? <button type="button" onClick={() => setPlaying(photo)} title={"Ver " + photo.name}
                           style={{ all:"unset", cursor:"zoom-in", width:"100%", height:"100%", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                          <img src={photo.driveFileId ? ("/api/drive/thumb/" + photo.driveFileId) : photo.url} alt={photo.name}
+                          <img src={mediaThumbUrl(photo) || photo.url} alt={photo.name}
                             onError={() => markFailed(photo.id)}
                             style={{ width:"100%", height:"100%", objectFit:"cover", display:"block" }} />
                         </button>
@@ -1165,7 +1183,7 @@ export function getAppHtml(buildId: string = 'dev'): string {
               {isVideoItem(playing)
                 ? <video src={videoSrc(playing)} controls autoPlay
                     style={{ width:"100%", maxHeight:"82vh", borderRadius:"var(--radius-lg)", background:"#000", display:"block" }} />
-                : <img src={playing.driveFileId ? ("/api/drive/media/" + playing.driveFileId) : playing.url} alt={playing.name}
+                : <img src={hasRemoteRef(playing) ? videoSrc(playing) : playing.url} alt={playing.name}
                     style={{ width:"100%", maxHeight:"82vh", objectFit:"contain", borderRadius:"var(--radius-lg)", background:"#101a1a", display:"block" }} />
               }
               <div style={{ marginTop:8, display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
@@ -1600,6 +1618,7 @@ export function getAppHtml(buildId: string = 'dev'): string {
     const [providers, setProviders] = useState(MEDIA_PROVIDERS);
     const [providerId, setProviderId] = useState("google_drive");
     const [folderUrl, setFolderUrl] = useState("");
+    const [crumbs, setCrumbs]       = useState([]); // navegación de carpetas (Dropbox/OneDrive): [{id,label}]
     const [files, setFiles]         = useState(null);
     const [loading, setLoading]     = useState(false);
     const [error, setError]         = useState("");
@@ -1608,25 +1627,21 @@ export function getAppHtml(buildId: string = 'dev'): string {
     const [linkKind, setLinkKind]   = useState("video");
     const [linkLoading, setLinkLoading] = useState(false);
     const [linkError, setLinkError] = useState("");
+    const [disconnecting, setDisconnecting] = useState(false);
 
     const today = new Date().toISOString().slice(0, 10);
     const provider = providers.find(p => p.id === providerId) || providers[0];
 
-    // Gate: el backend puede reportar que un proveedor ya admite explorar carpetas
-    // (browse). Cuando se implemente Dropbox/OneDrive por API, esto los activa solo.
-    useEffect(() => {
-      let alive = true;
-      fetch("/api/providers").then(r => r.ok ? r.json() : null).then(d => {
-        if (!alive || !d || !d.providers) return;
-        setProviders(MEDIA_PROVIDERS.map(p => {
-          const cap = d.providers.find(x => x.id === p.id);
-          return cap ? { ...p, browse: p.browse || !!cap.browse, configured: cap.configured } : p;
-        }));
-      }).catch(() => {});
-      return () => { alive = false; };
-    }, []);
-
-    const switchProvider = id => { setProviderId(id); setFiles(null); setError(""); setFolderUrl(""); setSelected({}); };
+    // Gate: el backend reporta si cada proveedor ya admite explorar carpetas (browse),
+    // si tiene credenciales configuradas, y si la cuenta ya está conectada (OAuth).
+    const refreshProviders = () => fetch("/api/providers").then(r => r.ok ? r.json() : null).then(d => {
+      if (!d || !d.providers) return;
+      setProviders(MEDIA_PROVIDERS.map(p => {
+        const cap = d.providers.find(x => x.id === p.id);
+        return cap ? { ...p, browse: p.browse || !!cap.browse, configured: !!cap.configured, connected: !!cap.connected } : p;
+      }));
+    }).catch(() => {});
+    useEffect(() => { refreshProviders(); }, []);
 
     const kindOfMime = m => (m||"").toLowerCase().startsWith("video/") ? "video" : "image";
     const baseName = n => { const s = n || ""; const dot = s.lastIndexOf("."); return dot > 0 ? s.slice(0, dot) : s; };
@@ -1657,18 +1672,24 @@ export function getAppHtml(buildId: string = 'dev'): string {
       } catch (e) {}
       return "url";
     };
-    const driveItem = (file, i) => ({
-      id: newId(i), name: baseName(file.name), source: "google_drive",
-      driveFileId: file.id, mimeType: file.mimeType || "", kind: kindOfMime(file.mimeType),
-      url: file.webViewLink || "", caption: "", tags: [], dateAdded: today,
-    });
+    // Construye un item de foto/video desde una entrada explorada, para la fuente indicada.
+    // sourceId se pasa explícito (no se infiere de providerId) porque "Enlace de un archivo"
+    // puede agregar un archivo de Drive aunque la pestaña activa sea otra.
+    const remoteItem = (file, i, sourceId) => {
+      const base = {
+        id: newId(i), name: baseName(file.name), source: sourceId,
+        mimeType: file.mimeType || "", kind: kindOfMime(file.mimeType),
+        caption: "", tags: [], dateAdded: today,
+      };
+      if (sourceId === "google_drive") return { ...base, driveFileId: file.id, url: file.webViewLink || "" };
+      return { ...base, remoteRef: file.id, url: "" };
+    };
 
-    const loadFolder = async () => {
-      const folderId = provider.parseFolder ? provider.parseFolder(folderUrl) : null;
-      if (!folderId) { setError("Enlace de carpeta inválido para " + provider.label + "."); return; }
+    const loadProviderFolder = async (id, providerArg) => {
+      const p = providerArg || provider;
       setLoading(true); setError(""); setSelected({});
       try {
-        const r = await fetch(provider.folderApi + folderId);
+        const r = await fetch(p.folderApi(id));
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
         setFiles(data.files || []);
@@ -1679,26 +1700,82 @@ export function getAppHtml(buildId: string = 'dev'): string {
       }
     };
 
+    const switchProvider = id => {
+      const p = providers.find(x => x.id === id) || providers[0];
+      setProviderId(id); setFiles(null); setError(""); setFolderUrl(""); setSelected({});
+      if (p.connectFlow && p.browse) {
+        setCrumbs([{ id: p.rootId, label: p.rootLabel }]);
+        loadProviderFolder(p.rootId, p);
+      } else {
+        setCrumbs([]);
+      }
+    };
+
+    // Si la cuenta se conecta mientras el modal está abierto en esa pestaña (por ejemplo
+    // tras recargar /api/providers), abre la raíz automáticamente.
+    useEffect(() => {
+      if (provider.connectFlow && provider.browse && crumbs.length === 0) {
+        setCrumbs([{ id: provider.rootId, label: provider.rootLabel }]);
+        loadProviderFolder(provider.rootId, provider);
+      }
+      // eslint-disable-next-line
+    }, [provider.browse, providerId]);
+
+    const navigateInto = entry => {
+      const next = crumbs.concat([{ id: entry.id, label: entry.name }]);
+      setCrumbs(next);
+      loadProviderFolder(entry.id, provider);
+    };
+    const navigateToCrumb = idx => {
+      const next = crumbs.slice(0, idx + 1);
+      setCrumbs(next);
+      loadProviderFolder(next[next.length - 1].id, provider);
+    };
+
+    const loadFolder = async () => {
+      const folderId = provider.parseFolder ? provider.parseFolder(folderUrl) : null;
+      if (!folderId) { setError("Enlace de carpeta inválido para " + provider.label + "."); return; }
+      await loadProviderFolder(folderId, { ...provider, folderApi: () => provider.folderApi + folderId });
+    };
+
+    const selectableFiles = (files || []).filter(f => !f.isFolder);
     const toggleSelect = id => setSelected(s => { const n = { ...s }; if (n[id]) delete n[id]; else n[id] = true; return n; });
-    const selectAll = () => { const n = {}; (files||[]).forEach(f => { n[f.id] = true; }); setSelected(n); };
+    const selectAll = () => { const n = {}; selectableFiles.forEach(f => { n[f.id] = true; }); setSelected(n); };
     const clearSelection = () => setSelected({});
     const selCount = Object.keys(selected).length;
-    const importFiles = list => { if (!list.length) return; onBulkImport(list.map((f, i) => driveItem(f, i))); };
-    const importSelected = () => { const chosen = (files||[]).filter(f => selected[f.id]); importFiles(chosen.length ? chosen : (files||[])); };
+    const importFiles = list => { if (!list.length) return; onBulkImport(list.map((f, i) => remoteItem(f, i, providerId))); };
+    const importSelected = () => { const chosen = selectableFiles.filter(f => selected[f.id]); importFiles(chosen.length ? chosen : selectableFiles); };
 
     // Edición rápida: cargar UN archivo en el formulario (doble clic).
     const pickFile = file => {
+      const item = remoteItem(file, 0, providerId);
       setForm(f => ({
         ...f,
-        name:        f.name || baseName(file.name),
-        source:      "google_drive",
-        url:         file.webViewLink || "",
-        driveFileId: file.id,
-        mimeType:    file.mimeType || "",
-        kind:        kindOfMime(file.mimeType),
+        name:        f.name || item.name,
+        source:      item.source,
+        url:         item.url || "",
+        driveFileId: item.driveFileId || "",
+        remoteRef:   item.remoteRef || "",
+        mimeType:    item.mimeType,
+        kind:        item.kind,
       }));
-      setFiles(null); setFolderUrl(""); setSelected({});
+      setFiles(null); setSelected({}); setFolderUrl(""); setCrumbs([]);
     };
+
+    const disconnectProvider = async p => {
+      setDisconnecting(true);
+      try {
+        await fetch(p.disconnectUrl, { method: "POST" });
+        setProviders(ps => ps.map(x => x.id === p.id ? { ...x, browse:false, connected:false } : x));
+        setFiles(null); setCrumbs([]); setSelected({});
+      } finally {
+        setDisconnecting(false);
+      }
+    };
+
+    const browseThumbUrl = entry => providerId === "google_drive" ? ("/api/drive/thumb/" + entry.id)
+      : providerId === "dropbox" ? ("/api/dropbox/thumb?path=" + encodeURIComponent(entry.id))
+      : ("/api/onedrive/thumb/" + encodeURIComponent(entry.id));
 
     // Agregar UN archivo desde un enlace pegado (archivo de Drive, o URL directa/Dropbox/OneDrive).
     const addSingleLink = async () => {
@@ -1712,7 +1789,7 @@ export function getAppHtml(buildId: string = 'dev'): string {
           const r = await fetch("/api/drive/file/" + fileId);
           const meta = await r.json();
           if (!r.ok) throw new Error(meta.error || "HTTP " + r.status);
-          onBulkImport([ driveItem({ id: meta.id, name: meta.name, mimeType: meta.mimeType, webViewLink: meta.webViewLink }, 0) ]);
+          onBulkImport([ remoteItem({ id: meta.id, name: meta.name, mimeType: meta.mimeType, webViewLink: meta.webViewLink }, 0, "google_drive") ]);
         } else {
           const kind = isDirectVideoUrl(raw) ? "video" : (isDirectImageUrl(raw) ? "image" : linkKind);
           const nm = baseName(decodeURIComponent(raw.split('?')[0].split('#')[0].split('/').pop() || "")) || "Archivo";
@@ -1753,50 +1830,104 @@ export function getAppHtml(buildId: string = 'dev'): string {
               );
             })}
           </div>
-          {provider.browse ? (
+          {provider.connectFlow && !provider.browse ? (
             <div>
-              <div style={{ fontSize:11, color:"var(--fg-3)", marginBottom:6 }}>
-                Pega el enlace de una carpeta compartida para elegir fotos y videos.
-              </div>
-              <div style={{ display:"flex", gap:6 }}>
-                <input type="url" value={folderUrl} onChange={e => setFolderUrl(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && loadFolder()}
-                  placeholder={provider.folderHint}
-                  style={{ flex:1, fontSize:12, padding:"6px 8px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.18)", background:"var(--input-bg)", color:"var(--fg-1)", fontFamily:"var(--font-sans)" }} />
-                <button type="button" onClick={loadFolder} disabled={loading || !folderUrl.trim()}
-                  style={{ fontSize:12, padding:"6px 12px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.18)", background:"var(--input-bg)", color:"var(--fg-2)", cursor:"pointer", flexShrink:0, fontFamily:"var(--font-sans)" }}>
-                  {loading ? "…" : "Cargar"}
-                </button>
-              </div>
-              {error && <div style={{ fontSize:11, color:"#B04A3A", marginTop:5 }}>{error}</div>}
-              {files !== null && files.length === 0 && (
-                <div style={{ fontSize:11, color:"var(--fg-3)", marginTop:6 }}>Sin fotos ni videos en esta carpeta.</div>
-              )}
-              {files && files.length > 0 && (
-                <div style={{ marginTop:8 }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:6 }}>
-                    <span style={{ fontSize:11, color:"var(--fg-3)" }}>
-                      {selCount > 0 ? (selCount + " de " + files.length + " seleccionados") : (files.length + " archivos · toca para seleccionar")}
-                    </span>
-                    <button type="button" onClick={selectAll}
-                      style={{ fontSize:11, color:"var(--fg-2)", background:"none", border:"none", cursor:"pointer", padding:0, fontFamily:"var(--font-sans)", textDecoration:"underline" }}>
-                      Seleccionar todos
-                    </button>
-                    {selCount > 0 && (
-                      <button type="button" onClick={clearSelection}
-                        style={{ fontSize:11, color:"#B04A3A", background:"none", border:"none", cursor:"pointer", padding:0, fontFamily:"var(--font-sans)", textDecoration:"underline" }}>
-                        Quitar selección
-                      </button>
-                    )}
+              {!provider.configured ? (
+                <div style={{ fontSize:11, color:"var(--fg-3)" }}>
+                  {provider.label} requiere configuración por el titular del sitio (credenciales OAuth) antes de poder conectarse. Mientras tanto, usa «Enlace de un archivo» (abajo).
+                </div>
+              ) : (
+                <div>
+                  <div style={{ fontSize:11, color:"var(--fg-3)", marginBottom:8 }}>
+                    Conecta tu cuenta de {provider.label} para explorar carpetas y elegir varios archivos a la vez.
                   </div>
-                  <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:5, maxHeight:180, overflowY:"auto" }}>
+                  <a href={provider.connectUrl}
+                    style={{ display:"inline-flex", alignItems:"center", gap:6, fontSize:12, fontWeight:500, padding:"7px 12px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.22)", color:"var(--fg-2)", textDecoration:"none" }}>
+                    <Icon name="link" size={12} />Conectar {provider.label}
+                  </a>
+                </div>
+              )}
+            </div>
+          ) : provider.browse ? (
+            <div>
+              {provider.connectFlow ? (
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, marginBottom:8, flexWrap:"wrap" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:4, flexWrap:"wrap", fontSize:11 }}>
+                    {crumbs.map((cr, idx) => (
+                      <span key={cr.id + '-' + idx} style={{ display:"inline-flex", alignItems:"center", gap:4 }}>
+                        {idx > 0 && <Icon name="chevron-right" size={11} color="var(--fg-3)" />}
+                        <button type="button" onClick={() => navigateToCrumb(idx)} disabled={idx === crumbs.length - 1}
+                          style={{ background:"none", border:"none", padding:0, cursor: idx === crumbs.length - 1 ? "default" : "pointer",
+                            color: idx === crumbs.length - 1 ? "var(--fg-1)" : "var(--fg-3)", fontWeight: idx === crumbs.length - 1 ? 600 : 400,
+                            textDecoration: idx === crumbs.length - 1 ? "none" : "underline", fontFamily:"var(--font-sans)", fontSize:11 }}>
+                          {cr.label}
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                  <button type="button" onClick={() => disconnectProvider(provider)} disabled={disconnecting}
+                    style={{ fontSize:11, color:"#B04A3A", background:"none", border:"none", cursor:"pointer", padding:0, fontFamily:"var(--font-sans)", textDecoration:"underline", flexShrink:0 }}>
+                    {disconnecting ? "…" : "Desconectar"}
+                  </button>
+                </div>
+              ) : (
+                <div style={{ fontSize:11, color:"var(--fg-3)", marginBottom:6 }}>
+                  Pega el enlace de una carpeta compartida para elegir fotos y videos.
+                </div>
+              )}
+              {!provider.connectFlow && (
+                <div style={{ display:"flex", gap:6 }}>
+                  <input type="url" value={folderUrl} onChange={e => setFolderUrl(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && loadFolder()}
+                    placeholder={provider.folderHint}
+                    style={{ flex:1, fontSize:12, padding:"6px 8px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.18)", background:"var(--input-bg)", color:"var(--fg-1)", fontFamily:"var(--font-sans)" }} />
+                  <button type="button" onClick={loadFolder} disabled={loading || !folderUrl.trim()}
+                    style={{ fontSize:12, padding:"6px 12px", borderRadius:"var(--radius-sm)", border:"1px solid rgba(28,43,43,0.18)", background:"var(--input-bg)", color:"var(--fg-2)", cursor:"pointer", flexShrink:0, fontFamily:"var(--font-sans)" }}>
+                    {loading ? "…" : "Cargar"}
+                  </button>
+                </div>
+              )}
+              {loading && <div style={{ fontSize:11, color:"var(--fg-3)", marginTop:6 }}>Cargando…</div>}
+              {error && <div style={{ fontSize:11, color:"#B04A3A", marginTop:5 }}>{error}</div>}
+              {!loading && files !== null && files.length === 0 && (
+                <div style={{ fontSize:11, color:"var(--fg-3)", marginTop:6 }}>Carpeta vacía (sin fotos, videos ni subcarpetas).</div>
+              )}
+              {!loading && files && files.length > 0 && (
+                <div style={{ marginTop:8 }}>
+                  {selectableFiles.length > 0 && (
+                    <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:6 }}>
+                      <span style={{ fontSize:11, color:"var(--fg-3)" }}>
+                        {selCount > 0 ? (selCount + " de " + selectableFiles.length + " seleccionados") : (selectableFiles.length + " archivos · toca para seleccionar")}
+                      </span>
+                      <button type="button" onClick={selectAll}
+                        style={{ fontSize:11, color:"var(--fg-2)", background:"none", border:"none", cursor:"pointer", padding:0, fontFamily:"var(--font-sans)", textDecoration:"underline" }}>
+                        Seleccionar todos
+                      </button>
+                      {selCount > 0 && (
+                        <button type="button" onClick={clearSelection}
+                          style={{ fontSize:11, color:"#B04A3A", background:"none", border:"none", cursor:"pointer", padding:0, fontFamily:"var(--font-sans)", textDecoration:"underline" }}>
+                          Quitar selección
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:5, maxHeight:220, overflowY:"auto" }}>
                     {files.map(file => {
+                      if (file.isFolder) {
+                        return (
+                          <button key={file.id} type="button" onClick={() => navigateInto(file)} title={"Abrir " + file.name}
+                            style={{ ...thumbBtnStyle(false), flexDirection:"column", gap:3, padding:"6px 4px", background:"rgba(28,43,43,0.05)" }}>
+                            <Icon name="folder" size={20} color="var(--fg-3)" />
+                            <span style={{ fontSize:9.5, color:"var(--fg-2)", textAlign:"center", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:"100%" }}>{file.name}</span>
+                          </button>
+                        );
+                      }
                       const on = !!selected[file.id];
                       const vid = kindOfMime(file.mimeType) === "video";
                       return (
                         <button key={file.id} type="button" onClick={() => toggleSelect(file.id)}
                           onDoubleClick={() => pickFile(file)} title={file.name} style={thumbBtnStyle(on)}>
-                          <img src={"/api/drive/thumb/" + file.id} alt={file.name}
+                          <img src={browseThumbUrl(file)} alt={file.name}
                             style={{ width:"100%", height:"100%", objectFit:"cover", display:"block", opacity: on ? 0.65 : 1 }} />
                           {vid && (
                             <span style={{ position:"absolute", left:3, bottom:3, display:"inline-flex", alignItems:"center", justifyContent:"center", width:16, height:16, borderRadius:8, background:"rgba(0,0,0,0.55)" }}>
@@ -1812,14 +1943,16 @@ export function getAppHtml(buildId: string = 'dev'): string {
                       );
                     })}
                   </div>
-                  <div style={{ display:"flex", gap:8, marginTop:8 }}>
-                    <Btn onClick={importSelected} variant="primary">
-                      <Icon name="download" size={13} />
-                      {selCount > 0 ? ("Importar " + selCount) : ("Importar todos (" + files.length + ")")}
-                    </Btn>
-                  </div>
+                  {selectableFiles.length > 0 && (
+                    <div style={{ display:"flex", gap:8, marginTop:8 }}>
+                      <Btn onClick={importSelected} variant="primary">
+                        <Icon name="download" size={13} />
+                        {selCount > 0 ? ("Importar " + selCount) : ("Importar todos (" + selectableFiles.length + ")")}
+                      </Btn>
+                    </div>
+                  )}
                   <div style={{ fontSize:10, color:"var(--fg-3)", marginTop:5 }}>
-                    Doble clic en una miniatura para editarla en el formulario antes de guardar.
+                    {provider.connectFlow ? "Toca una carpeta para abrirla. " : ""}Doble clic en una miniatura para editarla en el formulario antes de guardar.
                   </div>
                 </div>
               )}
@@ -1863,11 +1996,11 @@ export function getAppHtml(buildId: string = 'dev'): string {
         <div style={{ fontSize:10, color:"var(--fg-3)", marginTop:-8, marginBottom:12 }}>
           Para videos: pega un enlace directo (.mp4, .webm…) o un enlace compartido de Dropbox / OneDrive y se reproducirá aquí.
         </div>
-        {form.driveFileId && (
+        {(form.driveFileId || form.remoteRef) && (
           <div style={{ fontSize:11, color:"var(--fg-3)", marginTop:-8, marginBottom:12, display:"flex", alignItems:"center", gap:6 }}>
             <Icon name="check-circle" size={12} color="#639922" />
-            {form.kind === 'video' ? 'Video' : 'Foto'} vinculado de Drive (ID: {form.driveFileId.slice(0,12)}…)
-            <button type="button" onClick={() => setForm(f => ({...f, driveFileId:"", mimeType:"", kind:""}))}
+            {form.kind === 'video' ? 'Video' : 'Foto'} vinculado de {(PHOTO_SOURCES.find(s => s.id === form.source) || {}).label || form.source} (ref: {(form.driveFileId || form.remoteRef).slice(0,16)}…)
+            <button type="button" onClick={() => setForm(f => ({...f, driveFileId:"", remoteRef:"", mimeType:"", kind:""}))}
               style={{ fontSize:10, color:"#B04A3A", background:"none", border:"none", cursor:"pointer", padding:0, fontFamily:"var(--font-sans)" }}>
               desvincular
             </button>

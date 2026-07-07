@@ -7,6 +7,9 @@ import { listFolderMedia, proxyThumbnail, proxyMedia, getFileMeta } from './goog
 import { getProviderCapabilities } from './providers'
 import { BUILD_ID } from './build-info'
 import { getShareHtml, ShareMediaVM, ShareDocVM, ShareSectionVM } from './templates/share'
+import { getProviderToken, saveProviderToken, deleteProviderToken, getValidAccessToken } from './oauth-store'
+import { getDropboxAuthUrl, exchangeDropboxCode, refreshDropboxToken, listDropboxFolder, getDropboxThumbnail, streamDropboxFile } from './dropbox'
+import { getOneDriveAuthUrl, exchangeOneDriveCode, refreshOneDriveToken, listOneDriveFolder, getOneDriveThumbnail, streamOneDriveFile } from './onedrive'
 
 type Bindings = {
   DB: D1Database
@@ -15,6 +18,10 @@ type Bindings = {
   JWT_SECRET: string
   APP_USERNAME: string
   GOOGLE_SERVICE_ACCOUNT_JSON: string
+  DROPBOX_APP_KEY: string
+  DROPBOX_APP_SECRET: string
+  ONEDRIVE_CLIENT_ID: string
+  ONEDRIVE_CLIENT_SECRET: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -157,8 +164,193 @@ app.post('/api/data', requireAPI, saveData)
 
 // ── Media providers (capability gate) ──────────────────────────────────────
 
-app.get('/api/providers', requireAPI, (c) => {
-  return c.json({ providers: getProviderCapabilities(c.env) })
+app.get('/api/providers', requireAPI, async (c) => {
+  return c.json({ providers: await getProviderCapabilities(c.env) })
+})
+
+// ── OAuth helpers (Dropbox / OneDrive) ──────────────────────────────────────
+// CSRF state: a short-lived signed token, round-tripped through the provider's
+// authorize URL and echoed back on the callback, matched against a cookie set
+// at connect-time. The callback route does NOT require the session cookie
+// (it can't rely on it — the browser arrives via a cross-site redirect from
+// the provider, which is not sent for a SameSite=Strict cookie like `session`);
+// state validation is what proves the flow was initiated by an authenticated user.
+
+async function setOAuthState(c: any, provider: string): Promise<string> {
+  const state = await createToken(
+    { nonce: crypto.randomUUID(), exp: Date.now() + 10 * 60 * 1000 },
+    c.env.JWT_SECRET || DEV_SECRET
+  )
+  setCookie(c, 'oauth_state_' + provider, state, {
+    httpOnly: true, secure: true, sameSite: 'Lax', maxAge: 600, path: '/',
+  })
+  return state
+}
+
+async function verifyOAuthState(c: any, provider: string, stateParam: string | undefined): Promise<boolean> {
+  const cookieVal = getCookie(c, 'oauth_state_' + provider)
+  deleteCookie(c, 'oauth_state_' + provider, { path: '/' })
+  if (!cookieVal || !stateParam || cookieVal !== stateParam) return false
+  return !!(await verifyToken(cookieVal, c.env.JWT_SECRET || DEV_SECRET))
+}
+
+function oauthErrorPage(message: string) {
+  return '<p style="font-family:sans-serif;max-width:480px;margin:40px auto;padding:0 16px">' + message + ' <a href="/">Volver a la app</a>.</p>'
+}
+
+// ── Dropbox OAuth + browsing ─────────────────────────────────────────────────
+
+app.get('/api/dropbox/connect', requireAPI, async (c) => {
+  if (!c.env.DROPBOX_APP_KEY || !c.env.DROPBOX_APP_SECRET) {
+    return c.json({ error: 'Dropbox no configurado. Agrega los secretos DROPBOX_APP_KEY y DROPBOX_APP_SECRET.' }, 503)
+  }
+  const state = await setOAuthState(c, 'dropbox')
+  const redirectUri = new URL(c.req.url).origin + '/api/dropbox/callback'
+  return c.redirect(getDropboxAuthUrl(c.env.DROPBOX_APP_KEY, redirectUri, state))
+})
+
+app.get('/api/dropbox/callback', async (c) => {
+  const code = c.req.query('code')
+  const stateOk = await verifyOAuthState(c, 'dropbox', c.req.query('state'))
+  if (!stateOk || !code) return c.html(oauthErrorPage('Enlace de autorización inválido o expirado.'), 400)
+  if (!c.env.DROPBOX_APP_KEY || !c.env.DROPBOX_APP_SECRET) return c.json({ error: 'Dropbox no configurado' }, 503)
+  try {
+    const redirectUri = new URL(c.req.url).origin + '/api/dropbox/callback'
+    const tokens = await exchangeDropboxCode(code, c.env.DROPBOX_APP_KEY, c.env.DROPBOX_APP_SECRET, redirectUri)
+    await saveProviderToken(c.env.DB, {
+      provider: 'dropbox',
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      expiresAt: Date.now() + tokens.expiresIn * 1000,
+      accountLabel: tokens.accountId,
+    })
+    return c.redirect('/')
+  } catch (err) {
+    console.error('Dropbox callback error:', err)
+    return c.html(oauthErrorPage('No se pudo conectar Dropbox. Intenta de nuevo.'), 500)
+  }
+})
+
+app.post('/api/dropbox/disconnect', requireAPI, async (c) => {
+  await deleteProviderToken(c.env.DB, 'dropbox')
+  return c.json({ ok: true })
+})
+
+async function dropboxAccessToken(env: Bindings): Promise<string | null> {
+  if (!env.DROPBOX_APP_KEY || !env.DROPBOX_APP_SECRET) return null
+  return getValidAccessToken(env.DB, 'dropbox', (refreshToken) =>
+    refreshDropboxToken(refreshToken, env.DROPBOX_APP_KEY, env.DROPBOX_APP_SECRET))
+}
+
+app.get('/api/dropbox/folder', requireAPI, async (c) => {
+  const token = await dropboxAccessToken(c.env)
+  if (!token) return c.json({ error: 'Dropbox no conectado. Conecta tu cuenta primero.' }, 503)
+  try {
+    const files = await listDropboxFolder(c.req.query('path') || '', token)
+    return c.json({ files })
+  } catch (err) {
+    console.error('Dropbox folder error:', err)
+    return c.json({ error: String(err) }, 500)
+  }
+})
+
+app.get('/api/dropbox/thumb', requireAPI, async (c) => {
+  const token = await dropboxAccessToken(c.env)
+  if (!token) return new Response('Dropbox no conectado', { status: 503 })
+  try {
+    return await getDropboxThumbnail(c.req.query('path') || '', token)
+  } catch (err) {
+    console.error('Dropbox thumb error:', err)
+    return new Response('Error', { status: 500 })
+  }
+})
+
+app.get('/api/dropbox/media', requireAPI, async (c) => {
+  const token = await dropboxAccessToken(c.env)
+  if (!token) return new Response('Dropbox no conectado', { status: 503 })
+  try {
+    return await streamDropboxFile(c.req.query('path') || '', token, c.req.header('Range'))
+  } catch (err) {
+    console.error('Dropbox media error:', err)
+    return new Response('Error', { status: 500 })
+  }
+})
+
+// ── OneDrive OAuth + browsing ─────────────────────────────────────────────────
+
+app.get('/api/onedrive/connect', requireAPI, async (c) => {
+  if (!c.env.ONEDRIVE_CLIENT_ID || !c.env.ONEDRIVE_CLIENT_SECRET) {
+    return c.json({ error: 'OneDrive no configurado. Agrega los secretos ONEDRIVE_CLIENT_ID y ONEDRIVE_CLIENT_SECRET.' }, 503)
+  }
+  const state = await setOAuthState(c, 'onedrive')
+  const redirectUri = new URL(c.req.url).origin + '/api/onedrive/callback'
+  return c.redirect(getOneDriveAuthUrl(c.env.ONEDRIVE_CLIENT_ID, redirectUri, state))
+})
+
+app.get('/api/onedrive/callback', async (c) => {
+  const code = c.req.query('code')
+  const stateOk = await verifyOAuthState(c, 'onedrive', c.req.query('state'))
+  if (!stateOk || !code) return c.html(oauthErrorPage('Enlace de autorización inválido o expirado.'), 400)
+  if (!c.env.ONEDRIVE_CLIENT_ID || !c.env.ONEDRIVE_CLIENT_SECRET) return c.json({ error: 'OneDrive no configurado' }, 503)
+  try {
+    const redirectUri = new URL(c.req.url).origin + '/api/onedrive/callback'
+    const tokens = await exchangeOneDriveCode(code, c.env.ONEDRIVE_CLIENT_ID, c.env.ONEDRIVE_CLIENT_SECRET, redirectUri)
+    await saveProviderToken(c.env.DB, {
+      provider: 'onedrive',
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      expiresAt: Date.now() + tokens.expiresIn * 1000,
+    })
+    return c.redirect('/')
+  } catch (err) {
+    console.error('OneDrive callback error:', err)
+    return c.html(oauthErrorPage('No se pudo conectar OneDrive. Intenta de nuevo.'), 500)
+  }
+})
+
+app.post('/api/onedrive/disconnect', requireAPI, async (c) => {
+  await deleteProviderToken(c.env.DB, 'onedrive')
+  return c.json({ ok: true })
+})
+
+async function onedriveAccessToken(env: Bindings): Promise<string | null> {
+  if (!env.ONEDRIVE_CLIENT_ID || !env.ONEDRIVE_CLIENT_SECRET) return null
+  return getValidAccessToken(env.DB, 'onedrive', (refreshToken) =>
+    refreshOneDriveToken(refreshToken, env.ONEDRIVE_CLIENT_ID, env.ONEDRIVE_CLIENT_SECRET))
+}
+
+app.get('/api/onedrive/folder/:itemId', requireAPI, async (c) => {
+  const token = await onedriveAccessToken(c.env)
+  if (!token) return c.json({ error: 'OneDrive no conectado. Conecta tu cuenta primero.' }, 503)
+  try {
+    const files = await listOneDriveFolder(c.req.param('itemId'), token)
+    return c.json({ files })
+  } catch (err) {
+    console.error('OneDrive folder error:', err)
+    return c.json({ error: String(err) }, 500)
+  }
+})
+
+app.get('/api/onedrive/thumb/:itemId', requireAPI, async (c) => {
+  const token = await onedriveAccessToken(c.env)
+  if (!token) return new Response('OneDrive no conectado', { status: 503 })
+  try {
+    return await getOneDriveThumbnail(c.req.param('itemId'), token)
+  } catch (err) {
+    console.error('OneDrive thumb error:', err)
+    return new Response('Error', { status: 500 })
+  }
+})
+
+app.get('/api/onedrive/media/:itemId', requireAPI, async (c) => {
+  const token = await onedriveAccessToken(c.env)
+  if (!token) return new Response('OneDrive no conectado', { status: 503 })
+  try {
+    return await streamOneDriveFile(c.req.param('itemId'), token, c.req.header('Range'))
+  } catch (err) {
+    console.error('OneDrive media error:', err)
+    return new Response('Error', { status: 500 })
+  }
 })
 
 // ── Enlaces compartidos (solo lectura, público con token) ───────────────────
@@ -210,13 +402,19 @@ app.get('/share/:token', async (c) => {
   const { share, docs, photos, caseData } = res
   const base = '/share/' + token
 
-  const media: ShareMediaVM[] = photos.map((p: { name: string; driveFileId?: string; url?: string; caption?: string; dateAdded?: string; mimeType?: string; kind?: string }) => {
+  const media: ShareMediaVM[] = photos.map((p: { name: string; driveFileId?: string; source?: string; remoteRef?: string; url?: string; caption?: string; dateAdded?: string; mimeType?: string; kind?: string }) => {
     const video = isVideoItem(p)
     let src: string | null = null
     let poster: string | null = null
     if (p.driveFileId) {
       src = base + '/media/' + p.driveFileId
       if (video) poster = base + '/thumb/' + p.driveFileId
+    } else if (p.source === 'dropbox' && p.remoteRef) {
+      src = base + '/dropbox-media?path=' + encodeURIComponent(p.remoteRef)
+      if (video) poster = base + '/dropbox-thumb?path=' + encodeURIComponent(p.remoteRef)
+    } else if (p.source === 'onedrive' && p.remoteRef) {
+      src = base + '/onedrive-media/' + encodeURIComponent(p.remoteRef)
+      if (video) poster = base + '/onedrive-thumb/' + encodeURIComponent(p.remoteRef)
     } else if (p.url) {
       src = playableUrl(p.url)
     }
@@ -294,6 +492,78 @@ app.get('/share/:token/thumb/:fileId', async (c) => {
     return await proxyThumbnail(fileId, c.env.GOOGLE_SERVICE_ACCOUNT_JSON)
   } catch (err) {
     console.error('Share thumb error:', err)
+    return new Response('Error', { status: 500 })
+  }
+})
+
+// Dropbox/OneDrive: los tokens de conexión son de la cuenta (no por sesión), así
+// que estas rutas públicas pueden reutilizar la misma conexión OAuth del titular
+// para servir SOLO los archivos incluidos en el share (lista blanca por remoteRef).
+
+app.get('/share/:token/dropbox-media', async (c) => {
+  const res = await resolveShare(c.env, c.req.param('token'))
+  if (!res) return new Response('No disponible', { status: 404 })
+  const path = c.req.query('path') || ''
+  if (!res.photos.some((p: { source?: string; remoteRef?: string }) => p.source === 'dropbox' && p.remoteRef === path)) {
+    return new Response('No disponible', { status: 404 })
+  }
+  const token = await dropboxAccessToken(c.env)
+  if (!token) return new Response('No disponible', { status: 503 })
+  try {
+    return await streamDropboxFile(path, token, c.req.header('Range'))
+  } catch (err) {
+    console.error('Share dropbox media error:', err)
+    return new Response('Error', { status: 500 })
+  }
+})
+
+app.get('/share/:token/dropbox-thumb', async (c) => {
+  const res = await resolveShare(c.env, c.req.param('token'))
+  if (!res) return new Response('No disponible', { status: 404 })
+  const path = c.req.query('path') || ''
+  if (!res.photos.some((p: { source?: string; remoteRef?: string }) => p.source === 'dropbox' && p.remoteRef === path)) {
+    return new Response('No disponible', { status: 404 })
+  }
+  const token = await dropboxAccessToken(c.env)
+  if (!token) return new Response('No disponible', { status: 503 })
+  try {
+    return await getDropboxThumbnail(path, token)
+  } catch (err) {
+    console.error('Share dropbox thumb error:', err)
+    return new Response('Error', { status: 500 })
+  }
+})
+
+app.get('/share/:token/onedrive-media/:itemId', async (c) => {
+  const res = await resolveShare(c.env, c.req.param('token'))
+  if (!res) return new Response('No disponible', { status: 404 })
+  const itemId = c.req.param('itemId')
+  if (!res.photos.some((p: { source?: string; remoteRef?: string }) => p.source === 'onedrive' && p.remoteRef === itemId)) {
+    return new Response('No disponible', { status: 404 })
+  }
+  const token = await onedriveAccessToken(c.env)
+  if (!token) return new Response('No disponible', { status: 503 })
+  try {
+    return await streamOneDriveFile(itemId, token, c.req.header('Range'))
+  } catch (err) {
+    console.error('Share onedrive media error:', err)
+    return new Response('Error', { status: 500 })
+  }
+})
+
+app.get('/share/:token/onedrive-thumb/:itemId', async (c) => {
+  const res = await resolveShare(c.env, c.req.param('token'))
+  if (!res) return new Response('No disponible', { status: 404 })
+  const itemId = c.req.param('itemId')
+  if (!res.photos.some((p: { source?: string; remoteRef?: string }) => p.source === 'onedrive' && p.remoteRef === itemId)) {
+    return new Response('No disponible', { status: 404 })
+  }
+  const token = await onedriveAccessToken(c.env)
+  if (!token) return new Response('No disponible', { status: 503 })
+  try {
+    return await getOneDriveThumbnail(itemId, token)
+  } catch (err) {
+    console.error('Share onedrive thumb error:', err)
     return new Response('Error', { status: 500 })
   }
 })
