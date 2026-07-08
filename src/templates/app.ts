@@ -153,7 +153,9 @@ export function getAppHtml(buildId: string = 'dev'): string {
   // Categoría de un documento: la explícita (doc.category) o una inferida del nombre+tags.
   const inferCategory = doc => {
     if (doc && doc.category) return doc.category;
-    const hay = (((doc && doc.name) || "") + " " + (((doc && doc.tags) || []).join(" "))).toLowerCase();
+    const t = (doc && doc.tags) || [];
+    const tagsStr = Array.isArray(t) ? t.join(" ") : String(t);
+    const hay = (((doc && doc.name) || "") + " " + tagsStr).toLowerCase();
     const tokens = hay.split(/[^a-z0-9]+/);
     const has = k => (k.length <= 3 ? tokens.indexOf(k) >= 0 : hay.indexOf(k) >= 0);
     for (const c of DOC_CATEGORIES) { if (c.match.some(has)) return c.id; }
