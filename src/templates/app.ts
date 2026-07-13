@@ -247,12 +247,31 @@ export function getAppHtml(buildId: string = 'dev'): string {
   };
 
   // ── Icon component (Lucide SVG via data-lucide attribute) ───────────────────
-  const Icon = ({ name, size = 14, style = {}, color }) => (
-    <i data-lucide={name} style={{
-      width: size, height: size, display: "inline-block", flexShrink: 0,
-      lineHeight: 1, color, ...style,
-    }} />
-  );
+  // lucide.createIcons() reemplaza el <i data-lucide> por un <svg> mutando el DOM
+  // directamente, por fuera de React. Si React llega a desmontar ese <i> después
+  // (muy común con UI muy dinámica: checks/badges que aparecen y desaparecen),
+  // intenta removeChild sobre un nodo que Lucide ya reemplazó -> "NotFoundError:
+  // Failed to execute 'removeChild'". Para evitarlo, React solo posee el <span>
+  // exterior (una hoja, sin hijos JSX); el <i data-lucide> que Lucide reemplaza
+  // vive DENTRO, creado y limpiado a mano, así React nunca intenta tocarlo.
+  const Icon = ({ name, size = 14, style = {}, color }) => {
+    const holderRef = useRef(null);
+    useLayoutEffect(() => {
+      const holder = holderRef.current;
+      if (!holder) return;
+      const inner = document.createElement("i");
+      inner.setAttribute("data-lucide", name);
+      holder.appendChild(inner);
+      if (window.lucide) window.lucide.createIcons();
+      return () => { if (holder.contains(inner)) holder.removeChild(inner); };
+    }, [name]);
+    return (
+      <span ref={holderRef} style={{
+        width: size, height: size, display: "inline-flex", flexShrink: 0,
+        lineHeight: 1, color, ...style,
+      }} />
+    );
+  };
 
   // ── Badge ───────────────────────────────────────────────────────────────────
   const Badge = ({ color = "gray", label }) => {
@@ -2453,8 +2472,7 @@ export function getAppHtml(buildId: string = 'dev'): string {
         .catch(err => { setLoadError(err.message); setLoading(false); });
     }, []);
 
-    // Render Lucide icons after every paint
-    useLayoutEffect(() => { if (window.lucide) window.lucide.createIcons(); });
+    // (Cada Icon ya gestiona su propio lucide.createIcons() de forma aislada — ver Icon.)
 
     // Flush pending save on tab close
     useEffect(() => {
